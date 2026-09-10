@@ -9,16 +9,13 @@ from entrypoints.base_consumer import BaseConsumer
 from application.services.retriever import RetrieverService
 from application.interfaces import TokenValidator
 from domain.exceptions import PermissionDeniedError
-from config import Settings
 
 
 class QueryConsumer(BaseConsumer):
     """Consumer for query_queue: processes user questions."""
 
     def __init__(self, container: AsyncContainer) -> None:
-        settings = container.get(Settings)
-        super().__init__("query_queue", settings)
-        self._container = container
+        super().__init__("query_queue", container)
 
     async def handle(self, data: dict[str, Any]) -> None:
         token = data.get("token")

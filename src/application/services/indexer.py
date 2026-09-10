@@ -91,10 +91,16 @@ class IndexerService:
                 continue
             chunk_texts = self._split_text(text, max_tokens)
             for chunk_idx, chunk_text in enumerate(chunk_texts):
+                # Qdrant point IDs must be unsigned ints or UUIDs,
+                # so derive a deterministic UUID from the chunk coordinates.
+                chunk_id = str(
+                    uuid.uuid5(uuid.NAMESPACE_URL, f"{doc_id}:{idx}:{chunk_idx}")
+                )
                 chunks.append({
-                    "chunk_id": f"{doc_id}_{idx}_{chunk_idx}",
+                    "chunk_id": chunk_id,
                     "text": chunk_text,
                     "metadata": {
+                        "text": chunk_text,
                         "doc_id": str(doc_id),
                         "owner_id": doc.owner_id,
                         "access_group": doc.access_group or "",
@@ -109,15 +115,17 @@ class IndexerService:
         """Split text by words to roughly respect max_tokens."""
         words = text.split()
         chunks = []
-        current = []
+        current: List[str] = []
         current_len = 0
         for w in words:
-            if current_len + len(w) < max_tokens:
+            # +1 accounts for the space joining this word to the previous ones,
+            # otherwise chunks silently exceed max_tokens.
+            added = len(w) if not current else len(w) + 1
+            if current_len + added <= max_tokens or not current:
                 current.append(w)
-                current_len += len(w)
+                current_len += added
             else:
-                if current:
-                    chunks.append(" ".join(current))
+                chunks.append(" ".join(current))
                 current = [w]
                 current_len = len(w)
         if current:

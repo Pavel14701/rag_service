@@ -9,16 +9,13 @@ from entrypoints.base_consumer import BaseConsumer
 from application.services.indexer import IndexerService
 from application.interfaces import TokenValidator, DocumentRepository
 from domain.exceptions import PermissionDeniedError
-from config import Settings
 
 
 class IngestConsumer(BaseConsumer):
     """Consumer for ingest_queue: indexes a document."""
 
     def __init__(self, container: AsyncContainer) -> None:
-        settings = container.get(Settings)
-        super().__init__("ingest_queue", settings)
-        self._container = container
+        super().__init__("ingest_queue", container)
 
     async def handle(self, data: dict[str, Any]) -> None:
         token = data.get("token")

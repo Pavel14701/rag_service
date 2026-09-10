@@ -61,8 +61,8 @@ class RetrieverService:
                 "conversation_id": conversation_id,
             }
 
-        top_k = top_k or self._default_top_k
-        temperature = temperature or self._default_temperature
+        top_k = self._default_top_k if top_k is None else top_k
+        temperature = self._default_temperature if temperature is None else temperature
 
         # Access control: owner_id == user_id OR access_group in user's groups
         groups = await self._repo.get_user_groups(user_id)

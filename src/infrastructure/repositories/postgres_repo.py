@@ -52,7 +52,7 @@ class PostgresDocumentRepository(DocumentRepository):
     async def get_document(self, doc_id: uuid.UUID) -> Document | None:
         async with self._session_factory() as session:
             stmt = select(DocumentORM).where(
-                and_(DocumentORM.id == doc_id, not DocumentORM.deleted)
+                and_(DocumentORM.id == doc_id, DocumentORM.deleted.is_(False))
             )
             result = await session.execute(stmt)
             row = result.scalar_one_or_none()
@@ -62,7 +62,7 @@ class PostgresDocumentRepository(DocumentRepository):
 
     async def get_all_active(self) -> list[Document]:
         async with self._session_factory() as session:
-            stmt = select(DocumentORM).where(not DocumentORM.deleted)
+            stmt = select(DocumentORM).where(DocumentORM.deleted.is_(False))
             result = await session.execute(stmt)
             rows = result.scalars().all()
             return [self._to_domain(row) for row in rows]

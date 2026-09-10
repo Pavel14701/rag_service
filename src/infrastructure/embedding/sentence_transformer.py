@@ -2,6 +2,7 @@
 
 from typing import List
 import asyncio
+from functools import partial
 
 from sentence_transformers import SentenceTransformer
 
@@ -16,12 +17,13 @@ class SentenceTransformerEmbedding(EmbeddingModel):
 
     async def embed(self, texts: List[str]) -> List[List[float]]:
         loop = asyncio.get_running_loop()
-        embeddings = await loop.run_in_executor(
-            None,
+        encode = partial(
             self._model.encode,
             texts,
-            {"convert_to_numpy": True, "show_progress_bar": False},
+            convert_to_numpy=True,
+            show_progress_bar=False,
         )
+        embeddings = await loop.run_in_executor(None, encode)
         return [emb.tolist() for emb in embeddings]
 
     def dimension(self) -> int:

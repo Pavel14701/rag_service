@@ -1,12 +1,19 @@
 """Factory to select appropriate parser based on file extension."""
 
+from importlib import import_module
 from pathlib import Path
 
 from .base import DocumentParser
 from .markdown_parser import MarkdownParser
-from .pdf_parser import PDFParser
-from .docx_parser import DocxParser
-from .unstructured_parser import UnstructuredParser
+
+# Parsers backed by the heavy `unstructured` library are imported lazily:
+# importing `unstructured` pulls in python-magic/libmagic, which may be
+# unavailable (e.g. on Windows without libmagic installed).
+
+_LAZY_PARSERS = {
+    ".pdf": ("infrastructure.parsing.pdf_parser", "PDFParser"),
+    ".docx": ("infrastructure.parsing.docx_parser", "DocxParser"),
+}
 
 
 class ParserFactory:
@@ -26,9 +33,8 @@ class ParserFactory:
         ext = file_path.suffix.lower()
         if ext == ".md":
             return MarkdownParser()
-        if ext == ".pdf":
-            return PDFParser()
-        if ext == ".docx":
-            return DocxParser()
-        # Default fallback using unstructured
-        return UnstructuredParser()
+        module_name, class_name = _LAZY_PARSERS.get(
+            ext, ("infrastructure.parsing.unstructured_parser", "UnstructuredParser")
+        )
+        parser_cls = getattr(import_module(module_name), class_name)
+        return parser_cls()

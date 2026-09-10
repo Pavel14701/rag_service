@@ -1,5 +1,6 @@
 """Document management service for deletion and reindexing."""
 
+import logging
 import uuid
 from typing import Optional
 
@@ -7,6 +8,8 @@ from domain.exceptions import DocumentNotFoundError, PermissionDeniedError
 from application.interfaces import FileStorage, VectorStore, DocumentRepository
 from application.services.indexer import IndexerService
 from application.interfaces import EmbeddingModel
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentManager:

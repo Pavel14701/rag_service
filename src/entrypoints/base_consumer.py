@@ -2,25 +2,35 @@
 
 import asyncio
 import json
+import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
 import aio_pika
 from aio_pika import IncomingMessage
+from dishka import AsyncContainer
 
 from config import Settings
 
+logger = logging.getLogger(__name__)
+
 
 class BaseConsumer(ABC):
-    """Abstract base for a RabbitMQ consumer."""
+    """Abstract base for a RabbitMQ consumer.
 
-    def __init__(self, queue_name: str, settings: Settings) -> None:
+    Settings are resolved from the DI container lazily in ``start()``,
+    because ``AsyncContainer.get`` is a coroutine and cannot be awaited
+    in a synchronous ``__init__``.
+    """
+
+    def __init__(self, queue_name: str, container: AsyncContainer) -> None:
         self._queue_name = queue_name
-        self._settings = settings
+        self._container = container
 
     async def start(self) -> None:
         """Start consuming messages from the queue."""
-        connection = await aio_pika.connect_robust(self._settings.rabbitmq_url)
+        settings = await self._container.get(Settings)
+        connection = await aio_pika.connect_robust(settings.rabbitmq_url)
         async with connection:
             channel = await connection.channel()
             queue = await channel.declare_queue(self._queue_name, durable=True)
@@ -33,8 +43,7 @@ class BaseConsumer(ABC):
                 body = json.loads(message.body.decode())
                 await self.handle(body)
             except Exception as e:
-                # In production, log with structlog and send to DLX
-                print(f"Error processing message: {e}")
+                logger.exception("Error processing message: %s", e)
 
     @abstractmethod
     async def handle(self, data: dict[str, Any]) -> None:

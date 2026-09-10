@@ -9,16 +9,13 @@ from entrypoints.base_consumer import BaseConsumer
 from application.services.document_manager import DocumentManager
 from application.interfaces import TokenValidator, DocumentRepository
 from domain.exceptions import PermissionDeniedError
-from config import Settings
 
 
 class DeleteConsumer(BaseConsumer):
     """Consumer for delete_queue: deletes a document."""
 
     def __init__(self, container: AsyncContainer) -> None:
-        settings = container.get(Settings)
-        super().__init__("delete_queue", settings)
-        self._container = container
+        super().__init__("delete_queue", container)
 
     async def handle(self, data: dict[str, Any]) -> None:
         token = data.get("token")

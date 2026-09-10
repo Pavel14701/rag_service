@@ -14,7 +14,7 @@ logger = structlog.get_logger()
 
 async def main() -> None:
     """Start all RabbitMQ consumers."""
-    container = await create_container()
+    container = create_container()
     consumers = [
         IngestConsumer(container),
         QueryConsumer(container),
