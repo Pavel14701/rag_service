@@ -1,4 +1,4 @@
-"""JWT validation using python-jose.
+"""JWT validation using PyJWT.
 
 Hardening:
 - **Algorithm allowlist**: the token ``alg`` header must equal the
@@ -17,7 +17,7 @@ Hardening:
 
 from typing import Protocol, Sequence
 
-from jose import jwt, JWTError
+import jwt
 
 from application.interfaces import TokenValidator
 
@@ -72,7 +72,7 @@ class JWTValidator(TokenValidator):
         # the configured algorithm before any key is touched.
         try:
             header = jwt.get_unverified_header(token)
-        except JWTError as e:
+        except jwt.PyJWTError as e:
             raise ValueError(f'Invalid token: {e}')
         if header.get('alg') != self._algorithm:
             raise ValueError(
@@ -89,21 +89,29 @@ class JWTValidator(TokenValidator):
                     key,
                     algorithms=[self._algorithm],
                     issuer=self._issuer,
-                    audience=self._audience,
-                    options={'require_exp': True},
+                    # Audience is checked below (presence + equality) so
+                    # behaviour stays identical regardless of whether an
+                    # audience is configured.
+                    options={'require': ['exp'], 'verify_aud': False},
                 )
                 break
-            except JWTError as e:
+            except jwt.PyJWTError as e:
                 last_error = e
         if payload is None:
             raise ValueError(f'Invalid token: {last_error}')
 
-        # python-jose skips aud validation when the claim is absent,
-        # so enforce its presence explicitly when configured.
-        if self._audience and 'aud' not in payload:
-            raise ValueError(
-                'Invalid token: Token is missing the audience claim'
-            )
+        # PyJWT verifies ``aud`` only when the claim is present, so
+        # enforce its presence and equality explicitly when configured
+        # (keeps the error surface uniform for callers).
+        if self._audience is not None:
+            aud = payload.get('aud')
+            if aud is None:
+                raise ValueError(
+                    'Invalid token: Token is missing the audience claim'
+                )
+            auds = aud if isinstance(aud, list) else [aud]
+            if self._audience not in auds:
+                raise ValueError(f'Invalid token: unexpected audience {aud!r}')
 
         if self._blacklist is not None:
             jti = payload.get('jti')

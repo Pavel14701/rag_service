@@ -18,7 +18,7 @@ import time
 import uuid
 from typing import Any
 
-from jose import jwt
+import jwt
 
 
 class JWTSigner:

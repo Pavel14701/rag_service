@@ -1,7 +1,7 @@
 """Tests for JWTSigner (issue side of the JWT infrastructure)."""
 
 import pytest
-from jose import jwt as jose_jwt
+import jwt as jose_jwt
 
 from infrastructure.security.jwt_signer import JWTSigner
 from infrastructure.security.jwt_validator import JWTValidator

@@ -3,7 +3,7 @@
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
-from jose import jwt
+import jwt
 
 from infrastructure.security.jwt_validator import JWTValidator
 
