@@ -23,6 +23,11 @@ services:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -43,6 +48,101 @@ services:
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # One-shot schema migration (Alembic). Workers wait for it to finish.
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      POSTGRES_DSN: postgresql+asyncpg://rag:rag@postgres:5432/rag
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Real-time worker: serves only the query queue so long indexing
+  # jobs never block question answering. Scale with:
+  #   docker compose up -d --scale worker-query=3
+  worker-query:
+    build: .
+    environment: &worker_env
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      QDRANT_HOST: qdrant
+      POSTGRES_DSN: postgresql+asyncpg://rag:rag@postgres:5432/rag
+      POSTGRES_READ_DSN: ${POSTGRES_READ_DSN:-}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY in .env}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-small}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.1}
+      LLM_CIRCUIT_FAILURE_THRESHOLD: ${LLM_CIRCUIT_FAILURE_THRESHOLD:-5}
+      LLM_CIRCUIT_RESET_TIMEOUT: ${LLM_CIRCUIT_RESET_TIMEOUT:-60}
+      REDIS_URL: redis://redis:6379/0
+      SEARCH_HYBRID: ${SEARCH_HYBRID:-false}
+      PDF_OCR_STRATEGY: ${PDF_OCR_STRATEGY:-auto}
+      PDF_OCR_LANGUAGES: ${PDF_OCR_LANGUAGES:-eng}
+      METRICS_PORT: "8000"
+      OTEL_ENDPOINT: ${OTEL_ENDPOINT:-}
+      WORKER_QUEUES: "query"
+    ports:
+      - "8000:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_started
+      postgres:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      minio:
+        condition: service_started
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck: &worker_healthcheck
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Background worker: ingest / delete / reindex queues.
+  worker-background:
+    build: .
+    environment:
+      <<: *worker_env
+      WORKER_QUEUES: "background"
+    depends_on:
+      rabbitmq:
+        condition: service_started
+      postgres:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      minio:
+        condition: service_started
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck: *worker_healthcheck
 
 volumes:
   pg_data:
