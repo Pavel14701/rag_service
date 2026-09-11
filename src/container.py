@@ -30,6 +30,8 @@ from infrastructure.vector_store.qdrant_store import QdrantStore
 from infrastructure.repositories.postgres_repo import PostgresDocumentRepository
 from infrastructure.embedding.sentence_transformer import SentenceTransformerEmbedding
 from infrastructure.llm.deepseek_client import DeepSeekClient
+from infrastructure.llm.openai_client import OpenAIChatClient
+from infrastructure.llm.anthropic_client import AnthropicClient
 from infrastructure.security.jwt_validator import JWTValidator
 
 
@@ -46,7 +48,7 @@ class AppProvider(Provider):
             settings.minio_endpoint,
             access_key=settings.minio_access_key,
             secret_key=settings.minio_secret_key,
-            secure=False,
+            secure=settings.minio_secure,
             connection_pool_size=settings.minio_connection_pool_size,
         )
 
@@ -59,6 +61,8 @@ class AppProvider(Provider):
         return QdrantClient(
             host=settings.qdrant_host,
             port=settings.qdrant_port,
+            https=settings.qdrant_https,
+            api_key=settings.qdrant_api_key,
         )
 
     @provide
@@ -140,19 +144,76 @@ class AppProvider(Provider):
     def llm_client(
         self, settings: Settings, breaker: CircuitBreaker, caches: SharedCaches
     ) -> LLMGenerator:
-        return DeepSeekClient(
-            settings.deepseek_api_key,
-            settings.deepseek_base_url,
-            cache=caches.pick(maxsize=settings.llm_cache_size, ttl=settings.llm_cache_ttl),
+        """Build the LLM client for the configured provider.
+
+        Supported providers (``LLM_PROVIDER``): ``deepseek`` (default),
+        ``openai`` (any OpenAI chat-completions compatible endpoint —
+        OpenAI, vLLM, Ollama, Together, ...) and ``anthropic``.
+        ``LLM_MODEL`` overrides the provider default model.
+        """
+        cache = caches.pick(maxsize=settings.llm_cache_size, ttl=settings.llm_cache_ttl)
+        model = settings.llm_model
+
+        if settings.llm_provider == "deepseek":
+            if not settings.deepseek_api_key:
+                raise ValueError(
+                    "DEEPSEEK_API_KEY is required when LLM_PROVIDER=deepseek"
+                )
+            return DeepSeekClient(
+                settings.deepseek_api_key,
+                settings.deepseek_base_url,
+                model=model or "deepseek-chat",
+                max_tokens=settings.llm_max_tokens,
+                cache=cache,
+                circuit_breaker=breaker,
+            )
+
+        if settings.llm_provider == "openai":
+            if not settings.openai_api_key:
+                raise ValueError(
+                    "OPENAI_API_KEY is required when LLM_PROVIDER=openai"
+                )
+            return OpenAIChatClient(
+                settings.openai_api_key,
+                settings.openai_base_url,
+                model=model or "gpt-4o-mini",
+                max_tokens=settings.llm_max_tokens,
+                cache=cache,
+                circuit_breaker=breaker,
+            )
+
+        # settings.llm_provider == "anthropic" (validated in Settings)
+        if not settings.anthropic_api_key:
+            raise ValueError(
+                "ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic"
+            )
+        return AnthropicClient(
+            settings.anthropic_api_key,
+            settings.anthropic_base_url,
+            model=model or "claude-3-5-haiku-latest",
+            max_tokens=settings.llm_max_tokens,
+            cache=cache,
             circuit_breaker=breaker,
         )
 
     @provide
     def token_validator(self, settings: Settings) -> TokenValidator:
+        from infrastructure.security.token_blacklist import RedisTokenBlacklist
+
+        blacklist = None
+        if settings.redis_url:
+            import redis as redis_lib
+
+            blacklist = RedisTokenBlacklist(
+                redis_lib.Redis.from_url(settings.redis_url),
+                prefix=f"{settings.redis_cache_prefix}:revoked-jti",
+            )
         return JWTValidator(
-            settings.jwt_secret,
+            settings.jwt_verification_keys(),
+            algorithm=settings.jwt_algorithm,
             issuer=settings.jwt_issuer,
             audience=settings.jwt_audience,
+            blacklist=blacklist,
         )
 
     @provide
@@ -181,6 +242,11 @@ class AppProvider(Provider):
         llm: LLMGenerator,
         settings: Settings,
     ) -> RetrieverService:
+        pii_redactor = None
+        if settings.anonymize_conversations:
+            from shared.pii import redact_pii
+
+            pii_redactor = redact_pii
         return RetrieverService(
             vector_store,
             repo,
@@ -189,6 +255,7 @@ class AppProvider(Provider):
             default_temperature=settings.llm_temperature,
             hybrid_enabled=settings.search_hybrid,
             hybrid_rrf_k=settings.search_hybrid_rrf_k,
+            pii_redactor=pii_redactor,
         )
 
     @provide

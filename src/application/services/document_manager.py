@@ -69,6 +69,7 @@ class DocumentManager:
         self,
         admin_user_id: str,
         vector_dimension: Optional[int] = None,
+        user_groups: Optional[list[str]] = None,
     ) -> None:
         """
         Re-index all active documents.
@@ -79,11 +80,13 @@ class DocumentManager:
         Args:
             admin_user_id: ID of the admin user.
             vector_dimension: Dimension of embeddings. If not provided, obtained from model.
+            user_groups: Admin's groups (e.g. from the JWT claim). When
+                ``None``, groups are loaded from the repository.
 
         Raises:
             PermissionDeniedError: If user is not an admin.
         """
-        is_admin = await self._is_admin(admin_user_id)
+        is_admin = await self._is_admin(admin_user_id, user_groups)
         if not is_admin:
             raise PermissionDeniedError("User is not an administrator")
 
@@ -129,7 +132,16 @@ class DocumentManager:
         stored, expected = await self.check_embedding_version()
         return stored is not None and expected is not None and stored != expected
 
-    async def _is_admin(self, user_id: str) -> bool:
-        """Check if user is admin (placeholder)."""
-        groups = await self._repo.get_user_groups(user_id)
+    async def _is_admin(
+        self, user_id: str, user_groups: Optional[list[str]] = None
+    ) -> bool:
+        """Check if user is admin: member of the ``admin`` group.
+
+        Groups come from the JWT claim when provided, otherwise from
+        the repository-backed ``user_groups`` table.
+        """
+        if user_groups is not None:
+            groups = user_groups
+        else:
+            groups = await self._repo.get_user_groups(user_id)
         return "admin" in groups or user_id.startswith("admin_")

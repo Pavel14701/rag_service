@@ -159,7 +159,7 @@ async def test_ingest_consumer_not_owner_raises(deps):
         await consumer.handle({"token": "tok:other-user", "doc_id": str(doc.id)})
 
 
-async def test_query_consumer_calls_retriever(deps, repo, vector_store, llm, capsys):
+async def test_query_consumer_calls_retriever(deps, repo, vector_store, llm):
     doc = make_document(owner_id="user-1")
     await repo.save(doc)
     vector_store.search_results = [
@@ -169,7 +169,62 @@ async def test_query_consumer_calls_retriever(deps, repo, vector_store, llm, cap
 
     await consumer.handle({"token": "tok:user-1", "query": "hi"})
     assert len(llm.calls) == 1
-    assert "Result for" in capsys.readouterr().out
+
+
+async def test_query_consumer_publishes_reply_to_reply_to_queue(
+    deps, repo, vector_store
+):
+    doc = make_document(owner_id="user-1")
+    await repo.save(doc)
+    vector_store.search_results = [
+        {"id": "c1", "score": 0.9, "payload": {"doc_id": str(doc.id)}, "text": "t"}
+    ]
+    consumer = QueryConsumer(deps.container)
+    msg = FakeMessage(
+        json.dumps({"token": "tok:user-1", "query": "hi", "query_id": "q-1"}).encode(),
+        reply_to="rpc-reply-1",
+        correlation_id="corr-42",
+    )
+
+    await consumer._on_message(msg)
+
+    replies = [p for p in msg.published if p[0] == "rpc-reply-1"]
+    assert len(replies) == 1
+    _, body, _ = replies[0]
+    payload = json.loads(body)
+    assert payload["query_id"] == "q-1"
+    assert payload["answer"] == "fake answer"
+    assert payload["sources"][0]["doc_id"] == str(doc.id)
+
+
+async def test_query_consumer_reply_falls_back_to_shared_queue(deps, repo):
+    consumer = QueryConsumer(deps.container)
+    msg = FakeMessage(json.dumps({"token": "tok:user-1", "query": "hi"}).encode())
+
+    await consumer._on_message(msg)
+
+    routing_keys = [p[0] for p in msg.published]
+    assert "query_reply_queue" in routing_keys
+
+
+async def test_query_consumer_passes_groups_claim_to_retriever(
+    deps, repo, vector_store
+):
+    doc = make_document(owner_id="someone-else", access_group="team-a")
+    await repo.save(doc)
+    validator = FakeTokenValidator({"tok:g": {"sub": "user-1", "groups": ["team-a"]}})
+    container = FakeContainer(
+        {**deps.container._instances, TokenValidator: validator}
+    )
+    consumer = QueryConsumer(container)
+
+    await consumer.handle({"token": "tok:g", "query": "hi"})
+
+    filter_cond = vector_store.searches[-1]["filter_condition"]
+    assert filter_cond["should"][1] == {
+        "key": "access_group",
+        "match": {"value": ["team-a"]},
+    }
 
 
 async def test_query_consumer_missing_query_raises(deps):

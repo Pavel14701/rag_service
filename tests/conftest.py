@@ -41,9 +41,17 @@ requires_unstructured = pytest.mark.skipif(
 class FakeMessage:
     """Minimal IncomingMessage double."""
 
-    def __init__(self, body: bytes, headers: dict | None = None):
+    def __init__(
+        self,
+        body: bytes,
+        headers: dict | None = None,
+        reply_to: str | None = None,
+        correlation_id: str | None = None,
+    ):
         self.body = body
         self.headers = headers or {}
+        self.reply_to = reply_to
+        self.correlation_id = correlation_id
         self.published: list[tuple[str, bytes, dict]] = []
         self.channel = SimpleNamespace(
             default_exchange=SimpleNamespace(publish=self._publish)
@@ -117,6 +125,9 @@ class FakeDocumentRepository:
 
     async def get_user_groups(self, user_id: str) -> list[str]:
         return self.user_groups.get(user_id, [])
+
+    async def set_user_groups(self, user_id: str, groups: list[str]) -> None:
+        self.user_groups[user_id] = list(groups)
 
     async def save_conversation(
         self,
@@ -234,9 +245,18 @@ class FakeLLM:
 
 
 class FakeTokenValidator:
-    """TokenValidator double: decodes user from '<token>:<user>' strings."""
+    """TokenValidator double: decodes user from '<token>:<user>' strings.
 
-    def validate(self, token: str) -> dict[str, str]:
+    Custom payloads (e.g. with a ``groups`` claim) can be registered
+    per token string via the constructor.
+    """
+
+    def __init__(self, payloads: dict[str, dict[str, Any]] | None = None) -> None:
+        self.payloads = payloads or {}
+
+    def validate(self, token: str) -> dict[str, Any]:
+        if token in self.payloads:
+            return self.payloads[token]
         if ":" not in token:
             raise ValueError("Invalid token")
         return {"sub": token.split(":", 1)[1]}

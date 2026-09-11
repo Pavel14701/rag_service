@@ -7,7 +7,7 @@
 - 📥 Индексация документов (Markdown, PDF, DOCX и др.) с чанкингом и эмбеддингами, OCR для сканов (`PDF_OCR_STRATEGY` / `PDF_OCR_LANGUAGES`)
 - 🔎 Векторный поиск с фильтрацией по правам доступа (владелец / группа доступа)
 - 🧩 Гибридный поиск: векторный + лексический BM25, слияние ранжированием RRF (`SEARCH_HYBRID=true`), graceful деградация в чисто векторный
-- 💬 Генерация ответов через DeepSeek API строго по найденному контексту (температура — `LLM_TEMPERATURE`), circuit breaker на LLM API
+- 💬 Генерация ответов через LLM строго по найденному контексту (температура — `LLM_TEMPERATURE`), circuit breaker на LLM API; сменные провайдеры: DeepSeek (по умолчанию), любой OpenAI-совместимый endpoint (OpenAI, vLLM, Ollama), Anthropic (`LLM_PROVIDER`)
 - 🚀 Кэши: LLM-ответы и query-эмбеддинги в Redis (`REDIS_URL`) либо in-process TTL; недоступный Redis = cache miss, обработка не ломается
 - 🖼 Поддержка мультимодального контента: таблицы сохраняются с HTML-структурой, элементы тегируются (`type`: table / image / title)
 - 🏷 Маркер `embedding_model` в каждой точке Qdrant + предупреждение при старте о смене модели эмбеддингов (нужен переиндекс)
@@ -30,7 +30,7 @@
 | Метаданные | PostgreSQL 15 + SQLAlchemy 2 (asyncio, asyncpg), миграции Alembic |
 | Файловое хранилище | MinIO (S3 API) |
 | Эмбеддинги | sentence-transformers, `intfloat/multilingual-e5-small` (384 dim) |
-| LLM | DeepSeek Chat API (`deepseek-chat`) |
+| LLM | Сменные провайдеры: DeepSeek (`deepseek-chat`), OpenAI-совместимые API (vLLM, Ollama, ...), Anthropic Messages — `LLM_PROVIDER` |
 | Парсинг документов | unstructured (+ markdown / beautifulsoup4), OCR через tesseract |
 | Кэши | Redis (опционально) / in-process TTLCache |
 | DI | dishka |
@@ -64,7 +64,7 @@
 - `src/application/services` — use-cases: `IndexerService`, `RetrieverService`, `DocumentManager`
 - `src/application/interfaces` — порты (Protocol): `VectorStore`, `FileStorage`, `DocumentRepository`, `EmbeddingModel`, `LLMGenerator`, `TokenValidator`
 - `src/domain` — сущности (`Document`, `Conversation`) и исключения
-- `src/infrastructure` — адаптеры: Qdrant, MinIO, Postgres, Redis, sentence-transformers, DeepSeek (+ circuit breaker), JWT, парсеры
+- `src/infrastructure` — адаптеры: Qdrant, MinIO, Postgres, Redis, sentence-transformers, LLM-клиенты (DeepSeek / OpenAI-совместимый / Anthropic + circuit breaker), JWT, парсеры
 - `src/evaluation` — offline-оценка качества (метрики retrieval/faithfulness, golden-датасет, раннер A/B)
 - `src/shared` — гибридный поиск (BM25+RRF), кэши (TTL/Redis), circuit breaker, метрики, трассировка, логирование, хеширование
 - `src/container.py` — сборка графа зависимостей (dishka), `src/main.py` — запуск health-сервера и консьюмеров выбранной роли
@@ -135,11 +135,24 @@ docker-compose поднимает два воркера: `WORKER_QUEUES=query` (
 | `MINIO_ENDPOINT` | `localhost:9000` | S3-хранилище |
 | `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | `minioadmin` | ключи MinIO |
 | `MINIO_BUCKET` | `documents` | бакет с исходными файлами |
-| `DEEPSEEK_API_KEY` | **обязательно** | ключ DeepSeek API |
+| `LLM_PROVIDER` | `deepseek` | провайдер генерации: `deepseek`, `openai` (любой OpenAI-совместимый API — vLLM, Ollama, ...), `anthropic` |
+| `LLM_MODEL` | — | переопределение модели провайдера (`deepseek-chat` / `gpt-4o-mini` / `claude-3-5-haiku-latest` по умолчанию) |
+| `LLM_MAX_TOKENS` | `500` | лимит токенов ответа |
+| `DEEPSEEK_API_KEY` | — | ключ DeepSeek API (обязателен при `LLM_PROVIDER=deepseek`) |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | базовый URL LLM API |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | — / `https://api.openai.com/v1` | доступ при `LLM_PROVIDER=openai` (base_url — для vLLM/Ollama и др.) |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | — / `https://api.anthropic.com` | доступ при `LLM_PROVIDER=anthropic` |
 | `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | модель эмбеддингов |
 | `COLLECTION_NAME` | `documents` | коллекция Qdrant |
-| `JWT_SECRET` | **обязательно** | секрет HS256 для токенов |
+| `JWT_ALGORITHM` | `HS256` | алгоритм JWT: `HS256/384/512` (симметричные) или `RS256/384/512`, `ES256` (асимметричные) |
+| `JWT_SECRET` | при HS* | секрет для HS*-алгоритмов |
+| `JWT_SECRET_PREVIOUS` | — | предыдущий секрет на время ротации (принимается без даунтайма) |
+| `JWT_PUBLIC_KEY` / `JWT_PUBLIC_KEY_PREVIOUS` | при RS*/ES* | публичный ключ (PEM) для проверки; «previous» — для ротации |
+| `JWT_PRIVATE_KEY` | — | приватный ключ (PEM) для выпуска токенов (`JWTSigner`) в auth-сервисе |
+| `JWT_ISSUER` / `JWT_AUDIENCE` | — | при заданных значениях токены обязаны иметь совпадающие `iss` / `aud` |
+| `ANONYMIZE_CONVERSATIONS` | `false` | редакция PII (email, телефоны, карты, IBAN, ключи) перед записью в `conversations` |
+| `MINIO_SECURE` | `false` | HTTPS для MinIO |
+| `QDRANT_HTTPS` / `QDRANT_API_KEY` | `false` / — | HTTPS и API-ключ для Qdrant |
 | `LOG_LEVEL` | `INFO` | уровень логирования |
 | `WORKER_QUEUES` | `all` | роли воркера: `query` / `background` / `all` |
 | `METRICS_PORT` | `8000` | порт health/metrics-сервера |
@@ -158,7 +171,25 @@ docker-compose поднимает два воркера: `WORKER_QUEUES=query` (
 
 ## Очереди и формат сообщений
 
-Все сообщения — JSON. Каждый запрос содержит `token` — JWT (HS256, подписан `JWT_SECRET`), в claim `sub` — ID пользователя. Сообщения с невалидным токеном или недостатком прав отклоняются.
+Все сообщения — JSON. Каждый запрос содержит `token` — JWT (алгоритм настраивается `JWT_ALGORITHM`; по умолчанию HS256 с `JWT_SECRET`, рекомендуется RS256/ES256 с парой ключей), в claim `sub` — ID пользователя. Сообщения с невалидным токеном или недостатком прав отклоняются.
+
+## Безопасность
+
+**JWT-аутентификация**
+- Проверка токена: фиксированный список алгоритмов + явная проверка `alg`-заголовка (защита от algorithm-confusion), обязательный `exp`, опциональные `iss`/`aud` (`JWT_ISSUER`/`JWT_AUDIENCE` — включайте для многосервисных окружений).
+- **Ротация ключей без даунтайма**: валидатор принимает текущий и предыдущий ключ (`JWT_SECRET` + `JWT_SECRET_PREVIOUS`, аналогично для публичных ключей). Процедура: добавить новый ключ → перевыпускать токены новым → убрать старый из ротации после истечения максимального TTL.
+- **Отзыв токенов**: выпущенные токены содержат `jti`. При настроенном `REDIS_URL` валидатор проверяет blacklist (`RedisTokenBlacklist`, ключ `rag:revoked-jti:<jti>` с TTL до истечения токена) — украденный токен отзывается мгновенно. Без Redis используйте `InMemoryTokenBlacklist` (один процесс).
+- Для выпуска токенов используйте `infrastructure/security/jwt_signer.py::JWTSigner` (заполняет `jti`/`iat`/`exp`/`iss`/`aud`/`groups`).
+- Рекомендуется асимметричная схема (RS256): приватный ключ хранится только в auth-сервисе, воркеры проверяют подпись публичным ключом.
+
+**Контроль доступа к векторам**
+- Фильтр поиска — OR (`should`): `owner_id == user` **ИЛИ** `access_group ∈ groups пользователя`. Владелец сохраняет доступ к своим документам, даже не состояя в группе документа. Фильтр применяется на уровне Qdrant, до генерации ответа.
+- Проверки владельца дублируются на уровне сервисов (`IngestConsumer`, `DocumentManager`).
+
+**Шифрование и приватность**
+- **Транзит**: RabbitMQ — используйте `amqps://` в `RABBITMQ_URL`; MinIO — `MINIO_SECURE=true`; Qdrant — `QDRANT_HTTPS=true` (+ `QDRANT_API_KEY`); внешние LLM API вызываются по HTTPS.
+- **Персональные данные**: `ANONYMIZE_CONVERSATIONS=true` маскирует email/телефоны/карты/IBAN/API-ключи в `query` и `response` до записи в Postgres (модуль `shared/pii.py`).
+- **At rest**: включите шифрование на уровне томов/дисков (LUKS, BitLocker, cloud-диски с encryption-at-rest) для `pg_data`, `minio_data`, `qdrant_storage`; в MinIO доступно server-side encryption (SSE-S3/KMS), в Postgres — шифрование файловой системы или `pgcrypto` для отдельных колонок.
 
 | Очередь | Назначение | Payload |
 |---|---|---|
@@ -195,7 +226,7 @@ async def main() -> None:
 
 **Индексация** (`ingest_queue`): проверяется, что запрашивающий — владелец документа → файл скачивается из MinIO во временный каталог → парсится подходящим парсером (`ParserFactory`: `.md`, `.pdf`, `.docx`, остальное — unstructured auto; для PDF — выбранная OCR-стратегия) → текст режется на чанки (~512 символов, по границам слов) → каждому чанку присваивается детерминированный UUID (`uuid5` от `doc_id:idx:chunk_idx` — повторная индексация обновляет точки, а не дублирует) → эмбеддинги (`passage: `-префикс) → upsert в Qdrant с payload `{text, doc_id, owner_id, access_group, page, header, type, table_html?, embedding_model}` → статус в Postgres: `pending → indexed` (или `failed`).
 
-**Ответ на вопрос** (`query_queue`): вопрос эмбеддируется (с `query: `-префиксом; эмбеддинги кэшируются) → гибридный поиск по Qdrant: векторный top_k с фильтром доступа (`owner_id == user` ИЛИ `access_group` ∈ групп пользователя) + при `SEARCH_HYBRID=true` лексические кандидаты (full-text индекс по `text`) с BM25-ранжированием и RRF-слиянием → чанки собираются в контекст → LLM (DeepSeek, `LLM_TEMPERATURE`, кэш ответов, circuit breaker) генерирует ответ строго по контексту → вопрос, ответ и источники сохраняются в `conversations`.
+**Ответ на вопрос** (`query_queue`): вопрос эмбеддируется (с `query: `-префиксом; эмбеддинги кэшируются) → гибридный поиск по Qdrant: векторный top_k с фильтром доступа (`owner_id == user` ИЛИ `access_group` ∈ групп пользователя; группы берутся из JWT-claim `groups`, иначе из таблицы `user_groups` в Postgres) + при `SEARCH_HYBRID=true` лексические кандидаты (full-text индекс по `text`) с BM25-ранжированием и RRF-слиянием → чанки собираются в контекст → LLM (`LLM_PROVIDER`, `LLM_TEMPERATURE`, кэш ответов, circuit breaker) генерирует ответ строго по контексту → вопрос, ответ и источники сохраняются в `conversations`, а результат публикуется продюсеру: в очередь из `reply_to` входящего сообщения (RPC-паттерн, `correlation_id` сохраняется) либо в общую `query_reply_queue`.
 
 **Удаление** (`delete_queue`): только владелец → удаление векторов документа из Qdrant → (опционально) удаление файла из MinIO → soft-delete в Postgres.
 
@@ -243,7 +274,7 @@ src/
 ├── infrastructure/
 │   ├── embedding/             # sentence-transformers (+ префиксы e5, батчи)
 │   ├── file_storage/          # MinIO
-│   ├── llm/                   # DeepSeek HTTP-клиент (+ circuit breaker)
+│   ├── llm/                   # LLM-клиенты: OpenAI-совместимый (DeepSeek как специализация) и Anthropic (+ circuit breaker)
 │   ├── parsing/               # markdown / pdf (OCR) / docx / unstructured + фабрика
 │   ├── repositories/          # Postgres (read-реплика) + ORM-модели
 │   ├── security/              # JWT
@@ -259,8 +290,7 @@ tests/                         # pytest, double'ы в conftest.py
 
 ## Известные ограничения
 
-- **Ответ не возвращается продюсеру**: `QueryConsumer` пишет результат в stdout/conversation; предполагается reply-очередь.
-- `get_user_groups()` в Postgres-репозитории — заглушка (возвращает пустой список); фильтр по группам заработает после интеграции с auth-сервисом (порт уже принимает группы).
+- **Очередь LLM-провайдера одна на воркер**: выбор провайдера глобальный (`LLM_PROVIDER`), per-request роутинг между моделями не поддерживается.
 - Для реального OCR (`ocr_only`/`hi_res` на сканах) требуются `tesseract` и `poppler` в образе воркера.
 - `faithfulness` в evaluation — лексическая эвристика (n-граммное перекрытие с источниками), а не семантический судья; для строгой оценки подключите LLM-as-judge.
 - mutmut на Windows запускается только через WSL.

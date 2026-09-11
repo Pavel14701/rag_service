@@ -96,6 +96,43 @@ async def test_query_embedding_generated(service, vector_store, embedding):
     assert embedding.calls == [["find me"]]
 
 
+async def test_explicit_user_groups_override_repo(service, repo, vector_store):
+    result = await service.answer_query(
+        user_id="u1", query="question", user_groups=["team-a"]
+    )
+
+    filt = vector_store.searches[0]["filter_condition"]
+    assert filt["should"][1] == {
+        "key": "access_group",
+        "match": {"value": ["team-a"]},
+    }
+    # groups from the argument, not from the repo membership table
+    assert repo.user_groups.get("u1") is None
+    assert result["answer"] == "I don't have enough information to answer that."
+
+
+async def test_empty_user_groups_means_owner_only_without_repo_lookup(
+    service, repo, vector_store
+):
+    repo.user_groups["u1"] = ["team-a"]
+    await service.answer_query(user_id="u1", query="question", user_groups=[])
+
+    filt = vector_store.searches[0]["filter_condition"]
+    # explicit empty list wins over the membership table
+    assert filt == {"key": "owner_id", "match": {"value": "u1"}}
+
+
+async def test_owner_document_accessible_even_when_not_in_doc_group(service, repo, vector_store):
+    """Regression: access filter must be OR (owner OR group), not AND —
+    an owner must not lose access to their own document just because
+    they are not a member of the document's access group."""
+    await service.answer_query(user_id="u1", query="question", user_groups=["team-a"])
+
+    filt = vector_store.searches[0]["filter_condition"]
+    assert set(filt) == {"should"}  # OR-semantics, no "must"
+    assert filt["should"][0] == {"key": "owner_id", "match": {"value": "u1"}}
+
+
 def test_system_prompt_rules(service):
     prompt = service._build_system_prompt()
     assert "ONLY information from the context" in prompt

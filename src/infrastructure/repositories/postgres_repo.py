@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, update, and_
+from sqlalchemy import delete, select, update, and_
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -41,6 +41,15 @@ class ConversationORM(Base):
     response: Mapped[str] = mapped_column(nullable=False)
     sources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+
+
+class UserGroupORM(Base):
+    """User membership in access groups (managed via ``set_user_groups``)."""
+
+    __tablename__ = "user_groups"
+
+    user_id: Mapped[str] = mapped_column(primary_key=True)
+    group_name: Mapped[str] = mapped_column(primary_key=True)
 
 
 class PostgresDocumentRepository(DocumentRepository):
@@ -103,8 +112,21 @@ class PostgresDocumentRepository(DocumentRepository):
             await session.commit()
 
     async def get_user_groups(self, user_id: str) -> list[str]:
-        # Placeholder: will be implemented with the auth service.
-        return []
+        async with self._read_session_factory() as session:
+            stmt = select(UserGroupORM.group_name).where(
+                UserGroupORM.user_id == user_id
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return list(rows)
+
+    async def set_user_groups(self, user_id: str, groups: list[str]) -> None:
+        async with self._session_factory() as session:
+            await session.execute(
+                delete(UserGroupORM).where(UserGroupORM.user_id == user_id)
+            )
+            for group in groups:
+                session.add(UserGroupORM(user_id=user_id, group_name=group))
+            await session.commit()
 
     async def save_conversation(
         self,

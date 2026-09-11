@@ -35,7 +35,11 @@ class DocumentRepository(Protocol):
         ...
 
     async def get_user_groups(self, user_id: str) -> list[str]:
-        """Retrieve access groups for a given user."""
+        """Retrieve access groups for a given user from the DB."""
+        ...
+
+    async def set_user_groups(self, user_id: str, groups: list[str]) -> None:
+        """Replace the set of access groups for a given user."""
         ...
 
     async def save_conversation(

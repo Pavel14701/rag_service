@@ -46,6 +46,9 @@ class BaseConsumer(ABC):
     def __init__(self, queue_name: str, container: AsyncContainer) -> None:
         self._queue_name = queue_name
         self._container = container
+        # Currently processed message (reply_to / correlation_id context
+        # for handlers that respond to the producer).
+        self._current_message: IncomingMessage | None = None
 
     async def start(self) -> None:
         """Start consuming messages from the queue."""
@@ -54,6 +57,7 @@ class BaseConsumer(ABC):
         async with connection:
             channel = await connection.channel()
             await self._declare_topology(channel)
+            await self._declare_extra_topology(channel)
             queue = await channel.declare_queue(
                 self._queue_name,
                 durable=True,
@@ -94,6 +98,12 @@ class BaseConsumer(ABC):
             )
             await retry_queue.bind(retry_exchange, routing_key=str(delay))
 
+    async def _declare_extra_topology(
+        self, channel: aio_pika.abc.AbstractChannel
+    ) -> None:
+        """Declare consumer-specific queues/exchanges (no-op by default)."""
+        return None
+
     async def _on_message(self, message: IncomingMessage) -> None:
         headers = dict(message.headers or {})
         request_id = str(headers.get(REQUEST_ID_HEADER) or uuid.uuid4())
@@ -102,6 +112,7 @@ class BaseConsumer(ABC):
             request_id=request_id, queue=self._queue_name
         )
         start = time.perf_counter()
+        self._current_message = message
         try:
             with get_tracer().start_as_current_span("message.process") as span:
                 span.set_attribute("mq.queue", self._queue_name)
@@ -130,6 +141,7 @@ class BaseConsumer(ABC):
                 time.perf_counter() - start
             )
             structlog.contextvars.clear_contextvars()
+            self._current_message = None
 
     async def _retry_or_dead_letter(
         self, message: IncomingMessage, request_id: str

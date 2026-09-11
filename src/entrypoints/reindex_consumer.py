@@ -28,4 +28,4 @@ class ReindexConsumer(BaseConsumer):
         dimension = data.get("vector_dimension")
 
         manager = await self._container.get(DocumentManager)
-        await manager.reindex_all(user_id, dimension)
+        await manager.reindex_all(user_id, dimension, user_groups=payload.get("groups"))

@@ -1,7 +1,7 @@
 """RAG retrieval and answer generation service."""
 
 import structlog
-from typing import Any
+from typing import Any, Callable
 
 from application.interfaces import (
     VectorStore,
@@ -27,6 +27,7 @@ class RetrieverService:
         default_temperature: float = 0.1,
         hybrid_enabled: bool = False,
         hybrid_rrf_k: int = 60,
+        pii_redactor: Callable[[str], str] | None = None,
     ) -> None:
         self._vector_store = vector_store
         self._repo = repo
@@ -36,6 +37,9 @@ class RetrieverService:
         self._default_temperature = default_temperature
         self._hybrid_enabled = hybrid_enabled
         self._hybrid_rrf_k = hybrid_rrf_k
+        # Optional callable applied to query/answer before persisting
+        # conversations (PII redaction, see shared.pii).
+        self._pii_redactor = pii_redactor
 
     async def answer_query(
         self,
@@ -44,6 +48,7 @@ class RetrieverService:
         conversation_id: str | None = None,
         top_k: int | None = None,
         temperature: float | None = None,
+        user_groups: list[str] | None = None,
     ) -> dict[str, Any]:
         """
         Process a user query: retrieve relevant context and generate an answer.
@@ -54,6 +59,9 @@ class RetrieverService:
             conversation_id: Optional conversation ID for context.
             top_k: Override default number of chunks to retrieve.
             temperature: Override default LLM temperature.
+            user_groups: Access groups of the user (e.g. from the JWT
+                ``groups`` claim). When ``None``, groups are loaded from
+                the repository (``user_groups`` table).
 
         Returns:
             Dictionary with 'answer', 'sources', and 'conversation_id'.
@@ -68,8 +76,13 @@ class RetrieverService:
         top_k = self._default_top_k if top_k is None else top_k
         temperature = self._default_temperature if temperature is None else temperature
 
-        # Access control: owner_id == user_id OR access_group in user's groups
-        groups = await self._repo.get_user_groups(user_id)
+        # Access control: owner_id == user_id OR access_group in user's groups.
+        # Explicit user_groups (e.g. from the JWT claim) take precedence over
+        # the repository-backed membership table.
+        if user_groups is not None:
+            groups = user_groups
+        else:
+            groups = await self._repo.get_user_groups(user_id)
         if groups:
             filter_cond = {
                 "should": [
@@ -114,7 +127,12 @@ class RetrieverService:
             user_prompt = f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer:"
             answer = await self._llm.generate(system_prompt, user_prompt, temperature)
 
-        await self._repo.save_conversation(user_id, query, answer, sources)
+        # Persist the conversation with PII redacted when configured:
+        # the raw user question and the generated answer may contain
+        # personal data, sources are doc metadata only.
+        stored_query = self._pii_redactor(query) if self._pii_redactor else query
+        stored_answer = self._pii_redactor(answer) if self._pii_redactor else answer
+        await self._repo.save_conversation(user_id, stored_query, stored_answer, sources)
 
         return {
             "answer": answer,
