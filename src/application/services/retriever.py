@@ -9,7 +9,6 @@ from application.interfaces import (
     EmbeddingModel,
     LLMGenerator,
 )
-from domain.exceptions import PermissionDeniedError
 
 logger = structlog.get_logger(__name__)
 
@@ -49,9 +48,10 @@ class RetrieverService:
         top_k: int | None = None,
         temperature: float | None = None,
         user_groups: list[str] | None = None,
+        llm_provider: str | None = None,
+        llm_model: str | None = None,
     ) -> dict[str, Any]:
-        """
-        Process a user query: retrieve relevant context and generate an answer.
+        """Process a user query: retrieve context and answer it.
 
         Args:
             user_id: ID of the requesting user.
@@ -62,19 +62,26 @@ class RetrieverService:
             user_groups: Access groups of the user (e.g. from the JWT
                 ``groups`` claim). When ``None``, groups are loaded from
                 the repository (``user_groups`` table).
+            llm_provider: LLM provider for this request (per-request
+                routing; must be among ``LLM_ENABLED_PROVIDERS``).
+            llm_model: LLM model override for this request (must be in
+                ``LLM_ALLOWED_MODELS`` when the allowlist is set).
 
         Returns:
             Dictionary with 'answer', 'sources', and 'conversation_id'.
+
         """
         if not query.strip():
             return {
-                "answer": "Please provide a non-empty question.",
-                "sources": [],
-                "conversation_id": conversation_id,
+                'answer': 'Please provide a non-empty question.',
+                'sources': [],
+                'conversation_id': conversation_id,
             }
 
         top_k = self._default_top_k if top_k is None else top_k
-        temperature = self._default_temperature if temperature is None else temperature
+        temperature = (
+            self._default_temperature if temperature is None else temperature
+        )
 
         # Access control: owner_id == user_id OR access_group in user's groups.
         # Explicit user_groups (e.g. from the JWT claim) take precedence over
@@ -83,15 +90,16 @@ class RetrieverService:
             groups = user_groups
         else:
             groups = await self._repo.get_user_groups(user_id)
+        filter_cond: dict[str, Any]
         if groups:
             filter_cond = {
-                "should": [
-                    {"key": "owner_id", "match": {"value": user_id}},
-                    {"key": "access_group", "match": {"value": groups}},
+                'should': [
+                    {'key': 'owner_id', 'match': {'value': user_id}},
+                    {'key': 'access_group', 'match': {'value': groups}},
                 ]
             }
         else:
-            filter_cond = {"key": "owner_id", "match": {"value": user_id}}
+            filter_cond = {'key': 'owner_id', 'match': {'value': user_id}}
 
         # Embed query (E5 models require the "query: " prefix)
         query_vec = (await self._embedding.embed_query([query]))[0]
@@ -107,46 +115,95 @@ class RetrieverService:
         context_parts: list[str] = []
         sources: list[dict[str, Any]] = []
         for hit in hits:
-            text = hit.get("text", "")
+            text = hit.get('text', '')
             if text:
                 context_parts.append(text)
-            payload = hit.get("payload", {})
-            sources.append({
-                "doc_id": payload.get("doc_id"),
-                "chunk_id": hit.get("id"),
-                "page": payload.get("page"),
-            })
+            payload = hit.get('payload', {})
+            sources.append(
+                {
+                    'doc_id': payload.get('doc_id'),
+                    'chunk_id': hit.get('id'),
+                    'page': payload.get('page'),
+                }
+            )
 
         if not context_parts:
-            logger.info("no_relevant_context", user_id=user_id)
+            logger.info('no_relevant_context', user_id=user_id)
             answer = "I don't have enough information to answer that."
-            context = ""
+            context = ''
         else:
-            context = "\n\n".join(context_parts)
+            context = '\n\n'.join(context_parts)
             system_prompt = self._build_system_prompt()
-            user_prompt = f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer:"
-            answer = await self._llm.generate(system_prompt, user_prompt, temperature)
+            user_prompt = (
+                f'Context:\n{context}\n\nQuestion: {query}\n\nAnswer:'
+            )
+            answer = await self._generate(
+                system_prompt,
+                user_prompt,
+                temperature,
+                llm_provider,
+                llm_model,
+            )
 
         # Persist the conversation with PII redacted when configured:
         # the raw user question and the generated answer may contain
         # personal data, sources are doc metadata only.
-        stored_query = self._pii_redactor(query) if self._pii_redactor else query
-        stored_answer = self._pii_redactor(answer) if self._pii_redactor else answer
-        await self._repo.save_conversation(user_id, stored_query, stored_answer, sources)
+        stored_query = (
+            self._pii_redactor(query) if self._pii_redactor else query
+        )
+        stored_answer = (
+            self._pii_redactor(answer) if self._pii_redactor else answer
+        )
+        await self._repo.save_conversation(
+            user_id, stored_query, stored_answer, sources
+        )
 
         return {
-            "answer": answer,
-            "sources": sources,
-            "conversation_id": conversation_id,
+            'answer': answer,
+            'sources': sources,
+            'conversation_id': conversation_id,
         }
+
+    async def _generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        llm_provider: str | None,
+        llm_model: str | None,
+    ) -> str:
+        """Generate via the requested provider/model when a routing request
+        is made; falls back to the default single-provider path otherwise.
+        """
+        if llm_provider or llm_model:
+            generate_with = getattr(self._llm, 'generate_with', None)
+            if generate_with is None:
+                raise ValueError(
+                    'Per-request LLM routing requires a multi-provider router '
+                    '(set LLM_ENABLED_PROVIDERS).'
+                )
+            answer: str = await generate_with(
+                provider=llm_provider,
+                model=llm_model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+            )
+            return answer
+        return await self._llm.generate(
+            system_prompt, user_prompt, temperature
+        )
 
     def _build_system_prompt(self) -> str:
         return (
-            "You are a helpful assistant that answers questions based strictly on the provided context.\n"
-            "Rules:\n"
-            "1. Use ONLY information from the context to answer.\n"
+            'You are a helpful assistant that answers questions '
+            'based strictly on the provided context.\n'
+            'Rules:\n'
+            '1. Use ONLY information from the context to answer.\n'
             "2. If the answer is not in the context, say 'I don't know'.\n"
-            "3. Do not use any external knowledge or prior training data.\n"
-            "4. If the context contains contradictory information, mention that.\n"
-            "5. If appropriate, cite the source (e.g., 'according to document X')."
+            '3. Do not use any external knowledge or prior training data.\n'
+            '4. If the context contains contradictory information, '
+            'mention that.\n'
+            '5. If appropriate, cite the source '
+            "(e.g., 'according to document X')."
         )

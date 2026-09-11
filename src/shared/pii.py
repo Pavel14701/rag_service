@@ -13,21 +13,21 @@ rows are written to the ``conversations`` table:
 
 import re
 
-_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-_PHONE = re.compile(r"(?<![\w-])\+?\d[\d\s().-]{7,}\d(?![\w-])")
-_CARD = re.compile(r"(?<!\d)(?:\d[ -]?){13,19}\d(?!\d)")
-_IBAN = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b")
+_EMAIL = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
+_PHONE = re.compile(r'(?<![\w-])\+?\d[\d\s().-]{7,}\d(?![\w-])')
+_CARD = re.compile(r'(?<!\d)(?:\d[ -]?){13,19}\d(?!\d)')
+_IBAN = re.compile(r'\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b')
 _SECRET = re.compile(
-    r"(?:sk-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._-]{8,}|"
-    r"\b[0-9a-fA-F]{32,}\b)"
+    r'(?:sk-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._-]{8,}|'
+    r'\b[0-9a-fA-F]{32,}\b)'
 )
 
 _PATTERNS = (
-    (_SECRET, "[REDACTED-SECRET]"),
-    (_IBAN, "[REDACTED-IBAN]"),
-    (_CARD, "[REDACTED-CARD]"),
-    (_EMAIL, "[REDACTED-EMAIL]"),
-    (_PHONE, "[REDACTED-PHONE]"),
+    (_SECRET, '[REDACTED-SECRET]'),
+    (_IBAN, '[REDACTED-IBAN]'),
+    (_CARD, '[REDACTED-CARD]'),
+    (_EMAIL, '[REDACTED-EMAIL]'),
+    (_PHONE, '[REDACTED-PHONE]'),
 )
 
 

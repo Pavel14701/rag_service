@@ -9,8 +9,7 @@ class DocumentParser(Protocol):
     """Interface for parsing different document formats."""
 
     def parse(self, file_path: Path) -> list[dict[str, Any]]:
-        """
-        Parse a document and return a list of elements.
+        """Parse a document and return a list of elements.
 
         Each element is a dict with 'text' and 'metadata' keys.
         """

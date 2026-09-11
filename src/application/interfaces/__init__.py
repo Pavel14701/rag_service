@@ -1,3 +1,5 @@
+"""Ports (interfaces) implemented by infrastructure adapters."""
+
 from .document_repository import DocumentRepository
 from .embedding_model import EmbeddingModel
 from .file_storage import FileStorage
@@ -12,5 +14,5 @@ __all__ = (
     'FileStorage',
     'LLMGenerator',
     'TokenValidator',
-    'VectorStore'
+    'VectorStore',
 )

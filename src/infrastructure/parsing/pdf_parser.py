@@ -22,13 +22,12 @@ class PDFParser(DocumentParser):
     (e.g. ``eng`` or ``eng,rus``) used when OCR runs.
     """
 
-    def __init__(self, strategy: str = "auto", languages: str = "eng") -> None:
+    def __init__(self, strategy: str = 'auto', languages: str = 'eng') -> None:
         self._strategy = strategy
         self._languages = languages
 
     def parse(self, file_path: Path) -> list[dict[str, Any]]:
-        """
-        Parse a PDF file and return a list of text elements with metadata.
+        """Parse a PDF file and return a list of text elements with metadata.
 
         Args:
             file_path: Path to the PDF file.
@@ -36,8 +35,9 @@ class PDFParser(DocumentParser):
         Returns:
             list of dicts with keys 'text'
             and 'metadata' (includes page numbers).
+
         """
-        languages = [lang for lang in self._languages.split(",") if lang]
+        languages = [lang for lang in self._languages.split(',') if lang]
         elements = partition_pdf(
             filename=str(file_path),
             extract_images_in_pdf=False,
@@ -50,22 +50,24 @@ class PDFParser(DocumentParser):
             text = str(el).strip()
             if not text:
                 continue
-            metadata = el.metadata.to_dict() if hasattr(el, "metadata") else {}
+            metadata = el.metadata.to_dict() if hasattr(el, 'metadata') else {}
             # Multimodality: tag the element category ("table", "image",
             # "title", ...) and keep the HTML representation of tables so
             # they can be embedded and stored with structure preserved.
-            el_type = str(metadata.get("category") or "text").lower()
+            el_type = str(metadata.get('category') or 'text').lower()
             el_metadata: dict[str, Any] = {
-                "page": metadata.get("page_number", 0),
-                "header": metadata.get("header", ""),
-                "footer": metadata.get("footer", ""),
-                "type": el_type,
+                'page': metadata.get('page_number', 0),
+                'header': metadata.get('header', ''),
+                'footer': metadata.get('footer', ''),
+                'type': el_type,
             }
-            table_html = metadata.get("text_as_html")
-            if el_type == "table" and table_html:
-                el_metadata["table_html"] = table_html
-            result.append({
-                "text": text,
-                "metadata": el_metadata,
-            })
+            table_html = metadata.get('text_as_html')
+            if el_type == 'table' and table_html:
+                el_metadata['table_html'] = table_html
+            result.append(
+                {
+                    'text': text,
+                    'metadata': el_metadata,
+                }
+            )
         return result

@@ -13,8 +13,7 @@ class LLMGenerator(Protocol):
         user_prompt: str,
         temperature: float = 0.1,
     ) -> str:
-        """
-        Generate a response from the LLM.
+        """Generate a response from the LLM.
 
         Args:
             system_prompt: System instruction for the model.
@@ -23,5 +22,6 @@ class LLMGenerator(Protocol):
 
         Returns:
             The generated text.
+
         """
         ...

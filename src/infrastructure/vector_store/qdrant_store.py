@@ -23,7 +23,7 @@ class QdrantStore(VectorStore):
     BM25 client-side and fuses both ranked lists with RRF.
     """
 
-    _TEXT_FIELD = "text"
+    _TEXT_FIELD = 'text'
 
     def __init__(
         self,
@@ -45,33 +45,37 @@ class QdrantStore(VectorStore):
         self._hybrid_candidates = hybrid_candidates
         self._hybrid_rrf_k = hybrid_rrf_k
 
-    def _build_field_condition(self, cond: dict[str, Any]) -> models.FieldCondition:
-        """Convert ``{"key": ..., "match": {"value": ...}}`` to a Qdrant condition."""
-        value = cond["match"]["value"]
+    def _build_field_condition(
+        self, cond: dict[str, Any]
+    ) -> models.FieldCondition:
+        """Convert a ``match`` dict into a Qdrant field condition."""
+        value = cond['match']['value']
         if isinstance(value, (list, tuple, set)):
-            match: models.MatchValue | models.MatchAny = models.MatchAny(any=list(value))
+            match: models.MatchValue | models.MatchAny = models.MatchAny(
+                any=list(value)
+            )
         else:
             match = models.MatchValue(value=value)
-        return models.FieldCondition(key=cond["key"], match=match)
+        return models.FieldCondition(key=cond['key'], match=match)
 
     def _build_filter(self, condition: dict[str, Any]) -> models.Filter:
         """Convert a generic filter dict into a Qdrant Filter.
 
         Supported forms:
-          - ``{"key": ..., "match": {"value": ...}}`` (single condition -> must)
+          - ``{"key": ..., "match": {"value": ...}}`` -> single ``must``
           - ``{"must": [...], "should": [...], "must_not": [...]}`` (recursive)
         """
-        if "key" in condition:
+        if 'key' in condition:
             return models.Filter(must=[self._build_field_condition(condition)])
 
         kwargs: dict[str, Any] = {}
-        for clause in ("must", "should", "must_not"):
+        for clause in ('must', 'should', 'must_not'):
             sub_conditions = condition.get(clause)
             if not sub_conditions:
                 continue
-            converted = []
+            converted: list[models.FieldCondition | models.Filter] = []
             for sub in sub_conditions:
-                if "key" in sub:
+                if 'key' in sub:
                     converted.append(self._build_field_condition(sub))
                 else:
                     converted.append(self._build_filter(sub))
@@ -81,14 +85,14 @@ class QdrantStore(VectorStore):
     async def create_collection(self, dimension: int) -> None:
         """Create a new collection with given vector dimension."""
         kwargs: dict[str, Any] = {
-            "collection_name": self._collection,
-            "vectors_config": models.VectorParams(
+            'collection_name': self._collection,
+            'vectors_config': models.VectorParams(
                 size=dimension,
                 distance=models.Distance.COSINE,
             ),
         }
         if self._hnsw_m is not None or self._hnsw_ef_construct is not None:
-            kwargs["hnsw_config"] = models.HnswConfigDiff(
+            kwargs['hnsw_config'] = models.HnswConfigDiff(
                 m=self._hnsw_m,
                 ef_construct=self._hnsw_ef_construct,
             )
@@ -98,7 +102,7 @@ class QdrantStore(VectorStore):
                 collection_name=self._collection,
                 field_name=self._TEXT_FIELD,
                 field_schema=models.TextIndexParams(
-                    type=models.PayloadSchemaType.TEXT,
+                    type=models.TextIndexType.TEXT,
                     tokenizer=models.TokenizerType.WORD,
                 ),
             )
@@ -139,14 +143,14 @@ class QdrantStore(VectorStore):
         if filter_condition:
             qdrant_filter = self._build_filter(filter_condition)
 
-        with get_tracer().start_as_current_span("vector.search") as span:
-            span.set_attribute("qdrant.collection", self._collection)
-            span.set_attribute("search.top_k", top_k)
-            span.set_attribute("search.hybrid", keyword_query is not None)
+        with get_tracer().start_as_current_span('vector.search') as span:
+            span.set_attribute('qdrant.collection', self._collection)
+            span.set_attribute('search.top_k', top_k)
+            span.set_attribute('search.hybrid', keyword_query is not None)
             with VECTOR_SEARCH_SECONDS.time():
                 query_kwargs: dict[str, Any] = {}
                 if self._hnsw_ef is not None:
-                    query_kwargs["search_params"] = models.SearchParams(
+                    query_kwargs['search_params'] = models.SearchParams(
                         hnsw_ef=self._hnsw_ef
                     )
                 response = self._client.query_points(
@@ -161,20 +165,22 @@ class QdrantStore(VectorStore):
                     self._point_to_hit(point) for point in response.points
                 ]
                 if keyword_query:
-                    hits = self._hybrid_fuse(vector_hits, keyword_query, top_k, qdrant_filter)
+                    hits = self._hybrid_fuse(
+                        vector_hits, keyword_query, top_k, qdrant_filter
+                    )
                 else:
                     hits = vector_hits
-            span.set_attribute("search.results", len(hits))
+            span.set_attribute('search.results', len(hits))
             return hits
 
     @staticmethod
     def _point_to_hit(point: Any) -> dict[str, Any]:
         payload = point.payload or {}
         return {
-            "id": point.id,
-            "score": point.score,
-            "payload": payload,
-            "text": payload.get("text", ""),
+            'id': point.id,
+            'score': point.score,
+            'payload': payload,
+            'text': payload.get('text', ''),
         }
 
     def _hybrid_fuse(
@@ -185,21 +191,26 @@ class QdrantStore(VectorStore):
         qdrant_filter: Optional[models.Filter],
     ) -> list[dict[str, Any]]:
         """Fuse vector ranking with a client-side BM25 lexical ranking."""
-        keyword_points = self._scroll_keyword_candidates(keyword_query, qdrant_filter)
+        keyword_points = self._scroll_keyword_candidates(
+            keyword_query, qdrant_filter
+        )
         if not keyword_points:
             return vector_hits
 
-        corpus = [p.payload.get("text", "") if p.payload else "" for p in keyword_points]
+        corpus = [
+            p.payload.get('text', '') if p.payload else ''
+            for p in keyword_points
+        ]
         keyword_ranking = bm25_rank(keyword_query, corpus)
         keyword_ids = [keyword_points[i].id for i in keyword_ranking]
 
-        id_to_hit = {hit["id"]: hit for hit in vector_hits}
+        id_to_hit = {hit['id']: hit for hit in vector_hits}
         for point in keyword_points:
             id_to_hit.setdefault(point.id, self._point_to_hit(point))
 
         fused_ids = rrf_fuse(
             [
-                [hit["id"] for hit in vector_hits],
+                [hit['id'] for hit in vector_hits],
                 keyword_ids,
             ],
             k=self._hybrid_rrf_k,
@@ -208,7 +219,7 @@ class QdrantStore(VectorStore):
         fused = []
         for position, point_id in enumerate(fused_ids, start=1):
             hit = id_to_hit[point_id]
-            fused.append({**hit, "score": 1 / (self._hybrid_rrf_k + position)})
+            fused.append({**hit, 'score': 1 / (self._hybrid_rrf_k + position)})
         return fused
 
     def _scroll_keyword_candidates(
@@ -217,7 +228,11 @@ class QdrantStore(VectorStore):
         qdrant_filter: Optional[models.Filter],
     ) -> list[Any]:
         """Fetch lexical candidates via the full-text index on ``text``."""
-        must = list(qdrant_filter.must) if qdrant_filter and qdrant_filter.must else []
+        must: list[Any] = (
+            list(qdrant_filter.must)
+            if qdrant_filter and qdrant_filter.must
+            else []
+        )
         must.append(
             models.FieldCondition(
                 key=self._TEXT_FIELD,

@@ -8,9 +8,11 @@ Serves, on a single port:
 
 import asyncio
 import json
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+from config import Settings
 
 Check = Callable[[], Awaitable[None]]
 
@@ -23,7 +25,7 @@ class HealthServer:
         checks: dict[str, Check] | None = None,
         port: int = 8000,
         check_timeout: float = 2.0,
-        host: str = "0.0.0.0",
+        host: str = '0.0.0.0',
     ) -> None:
         self._checks = checks or {}
         self._port = port
@@ -48,23 +50,27 @@ class HealthServer:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         try:
-            request_line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+            request_line = await asyncio.wait_for(
+                reader.readline(), timeout=5.0
+            )
             while True:  # drain request headers
                 line = await asyncio.wait_for(reader.readline(), timeout=5.0)
-                if line in (b"\r\n", b"\n", b""):
+                if line in (b'\r\n', b'\n', b''):
                     break
-            parts = request_line.decode("latin-1").split()
-            method = parts[0] if parts else "GET"
-            path = parts[1] if len(parts) > 1 else "/"
-            status, body, content_type = await self.handle_request(method, path)
-            payload = b"" if method == "HEAD" else body
+            parts = request_line.decode('latin-1').split()
+            method = parts[0] if parts else 'GET'
+            path = parts[1] if len(parts) > 1 else '/'
+            status, body, content_type = await self.handle_request(
+                method, path
+            )
+            payload = b'' if method == 'HEAD' else body
             writer.write(
                 (
-                    f"HTTP/1.1 {status}\r\n"
-                    f"Content-Type: {content_type}\r\n"
-                    f"Content-Length: {len(body)}\r\n"
-                    "Connection: close\r\n\r\n"
-                ).encode("latin-1")
+                    f'HTTP/1.1 {status}\r\n'
+                    f'Content-Type: {content_type}\r\n'
+                    f'Content-Length: {len(body)}\r\n'
+                    'Connection: close\r\n\r\n'
+                ).encode('latin-1')
                 + payload
             )
             await writer.drain()
@@ -77,40 +83,50 @@ class HealthServer:
             except (ConnectionError, RuntimeError):
                 pass
 
-    async def handle_request(self, method: str, path: str) -> tuple[int, bytes, str]:
+    async def handle_request(
+        self, method: str, path: str
+    ) -> tuple[int, bytes, str]:
         """Return (HTTP status, body, content-type) for a request.
 
         Public for testability — does not require a real socket.
         """
-        if path == "/healthz":
-            return 200, json.dumps({"status": "ok"}).encode(), "application/json"
-        if path == "/readyz":
+        if path == '/healthz':
+            return (
+                200,
+                json.dumps({'status': 'ok'}).encode(),
+                'application/json',
+            )
+        if path == '/readyz':
             return await self._readiness()
-        if path == "/metrics":
+        if path == '/metrics':
             return 200, generate_latest(), CONTENT_TYPE_LATEST
-        return 404, json.dumps({"error": "not found"}).encode(), "application/json"
+        return (
+            404,
+            json.dumps({'error': 'not found'}).encode(),
+            'application/json',
+        )
 
     async def _readiness(self) -> tuple[int, bytes, str]:
         async def run_check(name: str, check: Check) -> tuple[str, str]:
             try:
                 await asyncio.wait_for(check(), self._check_timeout)
-                return name, "ok"
+                return name, 'ok'
             except Exception as e:  # noqa: BLE001 - report any failure
-                return name, f"error: {type(e).__name__}: {e}"
+                return name, f'error: {type(e).__name__}: {e}'
 
         results = await asyncio.gather(
             *(run_check(name, check) for name, check in self._checks.items())
         )
         checks = dict(results)
-        ok = all(value == "ok" for value in checks.values())
+        ok = all(value == 'ok' for value in checks.values())
         body = json.dumps(
-            {"status": "ok" if ok else "error", "checks": checks}
+            {'status': 'ok' if ok else 'error', 'checks': checks}
         ).encode()
-        return (200 if ok else 503), body, "application/json"
+        return (200 if ok else 503), body, 'application/json'
 
 
 def build_dependency_checks(
-    container, settings
+    container: Any, settings: Settings
 ) -> dict[str, Check]:
     """Build readiness checks for the external dependencies.
 
@@ -130,23 +146,28 @@ def build_dependency_checks(
     async def check_postgres() -> None:
         engine: AsyncEngine = await container.get(AsyncEngine)
         async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
+            await conn.execute(text('SELECT 1'))
 
     async def check_minio() -> None:
         client: Minio = await container.get(Minio)
-        exists = await asyncio.to_thread(client.bucket_exists, settings.minio_bucket)
+        exists = await asyncio.to_thread(
+            client.bucket_exists, settings.minio_bucket
+        )
         if not exists:
-            raise RuntimeError(f"bucket {settings.minio_bucket!r} does not exist")
+            raise RuntimeError(
+                f'bucket {settings.minio_bucket!r} does not exist'
+            )
 
     async def check_rabbitmq() -> None:
         connection = await asyncio.wait_for(
-            aio_pika.connect(settings.rabbitmq_url), settings.health_check_timeout
+            aio_pika.connect(settings.rabbitmq_url),
+            settings.health_check_timeout,
         )
         await connection.close()
 
     return {
-        "qdrant": check_qdrant,
-        "postgres": check_postgres,
-        "minio": check_minio,
-        "rabbitmq": check_rabbitmq,
+        'qdrant': check_qdrant,
+        'postgres': check_postgres,
+        'minio': check_minio,
+        'rabbitmq': check_rabbitmq,
     }

@@ -20,11 +20,20 @@ class MinioStorage(FileStorage):
             self._client.make_bucket(self._bucket)
 
     async def upload_file(self, local_path: Path, destination_key: str) -> str:
-        self._client.fput_object(self._bucket, destination_key, str(local_path))
+        """Upload a local file and return its storage key."""
+        self._client.fput_object(
+            self._bucket, destination_key, str(local_path)
+        )
         return destination_key
 
-    async def download_file(self, source_key: str, destination_path: Path) -> None:
-        self._client.fget_object(self._bucket, source_key, str(destination_path))
+    async def download_file(
+        self, source_key: str, destination_path: Path
+    ) -> None:
+        """Download a stored object to a local path."""
+        self._client.fget_object(
+            self._bucket, source_key, str(destination_path)
+        )
 
     async def delete_file(self, source_key: str) -> None:
+        """Delete a stored object."""
         self._client.remove_object(self._bucket, source_key)

@@ -7,7 +7,7 @@ lexical (keyword) hits without external dependencies.
 import re
 from typing import Any
 
-_TOKEN_RE = re.compile(r"[a-z0-9а-яё]+", re.IGNORECASE)
+_TOKEN_RE = re.compile(r'[a-z0-9а-яё]+', re.IGNORECASE)
 
 
 def tokenize(text: str) -> list[str]:
@@ -26,12 +26,13 @@ def bm25_rank(
     Args:
         query: Keyword query text.
         corpus: Document texts; index in the corpus is the document ID.
-        k, b: BM25 parameters (k controls term-frequency saturation,
-            b the length normalization).
+        k: BM25 term-frequency saturation parameter.
+        b: BM25 length normalization parameter.
 
     Returns:
         Corpus indices sorted by descending BM25 score (documents with
         zero score are excluded).
+
     """
     doc_tokens = [tokenize(doc) for doc in corpus]
     doc_count = len(doc_tokens)
@@ -59,8 +60,11 @@ def bm25_rank(
             if not occurrences:
                 continue
             idf = _idf(df.get(term, 0), doc_count)
-            scores[index] += idf * occurrences * (k + 1) / (
-                occurrences + k * (1 - b + b * length_norm)
+            scores[index] += (
+                idf
+                * occurrences
+                * (k + 1)
+                / (occurrences + k * (1 - b + b * length_norm))
             )
 
     ranked = sorted(
@@ -95,6 +99,7 @@ def rrf_fuse(
     Returns:
         Items ordered by descending fused score (ties keep the order of
         first appearance in the first list).
+
     """
     scores: dict[Any, float] = {}
     first_seen: dict[Any, int] = {}
@@ -102,5 +107,7 @@ def rrf_fuse(
         for rank, item in enumerate(items, start=1):
             scores[item] = scores.get(item, 0.0) + 1 / (k + rank)
             first_seen.setdefault(item, len(first_seen))
-    ordered = sorted(scores, key=lambda item: (-scores[item], first_seen[item]))
+    ordered = sorted(
+        scores, key=lambda item: (-scores[item], first_seen[item])
+    )
     return ordered if top_k is None else ordered[:top_k]

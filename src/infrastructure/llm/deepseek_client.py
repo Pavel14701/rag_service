@@ -8,7 +8,7 @@ completions API) pinned to the ``deepseek-chat`` model.
 import httpx
 
 from infrastructure.llm.openai_client import OpenAIChatClient
-from shared.caching import TTLCache
+from shared.caching import Cache
 from shared.circuit_breaker import CircuitBreaker
 
 
@@ -19,7 +19,7 @@ class DeepSeekClient(OpenAIChatClient):
     with ``(api_key, base_url)`` and the provider default model.
     """
 
-    error_prefix = "DeepSeek API error"
+    error_prefix = 'DeepSeek API error'
 
     def __init__(
         self,
@@ -27,9 +27,9 @@ class DeepSeekClient(OpenAIChatClient):
         base_url: str,
         timeout: float = 30.0,
         http_transport: httpx.AsyncBaseTransport | None = None,
-        cache: TTLCache | None = None,
+        cache: Cache | None = None,
         circuit_breaker: CircuitBreaker | None = None,
-        model: str = "deepseek-chat",
+        model: str = 'deepseek-chat',
         max_tokens: int = 500,
     ) -> None:
         super().__init__(
@@ -42,4 +42,3 @@ class DeepSeekClient(OpenAIChatClient):
             cache=cache,
             circuit_breaker=circuit_breaker,
         )
-

@@ -9,8 +9,7 @@ class FileStorage(Protocol):
     """Abstract interface for file storage (e.g., MinIO, local FS)."""
 
     async def upload_file(self, local_path: Path, destination_key: str) -> str:
-        """
-        Upload a file to storage.
+        """Upload a file to storage.
 
         Args:
             local_path: Path to the local file.
@@ -18,20 +17,19 @@ class FileStorage(Protocol):
 
         Returns:
             The storage key of the uploaded file.
+
         """
         ...
 
     async def download_file(
-        self,
-        source_key: str,
-        destination_path: Path
+        self, source_key: str, destination_path: Path
     ) -> None:
-        """
-        Download a file from storage to a local path.
+        """Download a file from storage to a local path.
 
         Args:
             source_key: Storage key of the file.
             destination_path: Local path to save the file.
+
         """
         ...
 

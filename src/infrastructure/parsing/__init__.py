@@ -12,18 +12,18 @@ from .markdown_parser import MarkdownParser
 from .factory import ParserFactory
 
 _LAZY_EXPORTS = {
-    "PDFParser": "infrastructure.parsing.pdf_parser",
-    "DocxParser": "infrastructure.parsing.docx_parser",
-    "UnstructuredParser": "infrastructure.parsing.unstructured_parser",
+    'PDFParser': 'infrastructure.parsing.pdf_parser',
+    'DocxParser': 'infrastructure.parsing.docx_parser',
+    'UnstructuredParser': 'infrastructure.parsing.unstructured_parser',
 }
 
 __all__ = [
-    "DocumentParser",
-    "MarkdownParser",
-    "PDFParser",
-    "DocxParser",
-    "UnstructuredParser",
-    "ParserFactory",
+    'DocumentParser',
+    'MarkdownParser',
+    'PDFParser',  # noqa: F822 - lazy export via module __getattr__
+    'DocxParser',  # noqa: F822 - lazy export via module __getattr__
+    'UnstructuredParser',  # noqa: F822 - lazy export via module __getattr__
+    'ParserFactory',
 ]
 
 
@@ -32,4 +32,4 @@ def __getattr__(name: str) -> Any:
         from importlib import import_module
 
         return getattr(import_module(_LAZY_EXPORTS[name]), name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

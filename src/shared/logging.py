@@ -12,11 +12,13 @@ import sys
 import structlog
 
 
-def configure_logging(level: str = "INFO", json_output: bool = True) -> None:
+def configure_logging(level: str = 'INFO', json_output: bool = True) -> None:
     """Configure structlog and stdlib logging."""
-    logging.basicConfig(level=level.upper(), stream=sys.stdout, format="%(message)s")
+    logging.basicConfig(
+        level=level.upper(), stream=sys.stdout, format='%(message)s'
+    )
 
-    renderer
+    renderer: structlog.typing.Processor
     if json_output:
         renderer = structlog.processors.JSONRenderer()
     else:
@@ -27,7 +29,7 @@ def configure_logging(level: str = "INFO", json_output: bool = True) -> None:
             structlog.contextvars.merge_contextvars,
             structlog.stdlib.add_log_level,
             structlog.stdlib.PositionalArgumentsFormatter(),
-            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.TimeStamper(fmt='iso'),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             renderer,

@@ -23,9 +23,7 @@ class DocumentRepository(Protocol):
         ...
 
     async def update_status(
-        self,
-        doc_id: uuid.UUID,
-        status: DocStatus
+        self, doc_id: uuid.UUID, status: DocStatus
     ) -> None:
         """Update the indexing status of a document."""
         ...

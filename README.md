@@ -7,7 +7,7 @@
 - 📥 Индексация документов (Markdown, PDF, DOCX и др.) с чанкингом и эмбеддингами, OCR для сканов (`PDF_OCR_STRATEGY` / `PDF_OCR_LANGUAGES`)
 - 🔎 Векторный поиск с фильтрацией по правам доступа (владелец / группа доступа)
 - 🧩 Гибридный поиск: векторный + лексический BM25, слияние ранжированием RRF (`SEARCH_HYBRID=true`), graceful деградация в чисто векторный
-- 💬 Генерация ответов через LLM строго по найденному контексту (температура — `LLM_TEMPERATURE`), circuit breaker на LLM API; сменные провайдеры: DeepSeek (по умолчанию), любой OpenAI-совместимый endpoint (OpenAI, vLLM, Ollama), Anthropic (`LLM_PROVIDER`)
+- 💬 Генерация ответов через LLM строго по найденному контексту (температура — `LLM_TEMPERATURE`), circuit breaker на LLM API; сменные провайдеры: DeepSeek (по умолчанию), любой OpenAI-совместимый endpoint (OpenAI, vLLM, Ollama), Anthropic (`LLM_PROVIDER`); per-request роутинг между провайдерами и моделями (`LLM_ENABLED_PROVIDERS`, поле `llm_provider`/`llm_model` в запросе) — лицензия MIT (`LICENSE`)
 - 🚀 Кэши: LLM-ответы и query-эмбеддинги в Redis (`REDIS_URL`) либо in-process TTL; недоступный Redis = cache miss, обработка не ломается
 - 🖼 Поддержка мультимодального контента: таблицы сохраняются с HTML-структурой, элементы тегируются (`type`: table / image / title)
 - 🏷 Маркер `embedding_model` в каждой точке Qdrant + предупреждение при старте о смене модели эмбеддингов (нужен переиндекс)
@@ -142,7 +142,9 @@ docker-compose поднимает два воркера: `WORKER_QUEUES=query` (
 | `MINIO_ENDPOINT` | `localhost:9000` | S3-хранилище |
 | `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | `minioadmin` | ключи MinIO |
 | `MINIO_BUCKET` | `documents` | бакет с исходными файлами |
-| `LLM_PROVIDER` | `deepseek` | провайдер генерации: `deepseek`, `openai` (любой OpenAI-совместимый API — vLLM, Ollama, ...), `anthropic` |
+| `LLM_PROVIDER` | `deepseek` | провайдер генерации по умолчанию: `deepseek`, `openai` (любой OpenAI-совместимый API — vLLM, Ollama, ...), `anthropic` |
+| `LLM_ENABLED_PROVIDERS` | — | comma-список провайдеров, доступных для per-request роутинга (пусто = только провайдер по умолчанию). Ключи всех включённых провайдеров обязательны при старте |
+| `LLM_ALLOWED_MODELS` | — | comma-список моделей, которые запрос может явно запросить через `llm_model` (пусто = любые модели включённых провайдеров). Ограничивайте в мультитенанте (контроль расходов) |
 | `LLM_MODEL` | — | переопределение модели провайдера (`deepseek-chat` / `gpt-4o-mini` / `claude-3-5-haiku-latest` по умолчанию) |
 | `LLM_MAX_TOKENS` | `500` | лимит токенов ответа |
 | `DEEPSEEK_API_KEY` | — | ключ DeepSeek API (обязателен при `LLM_PROVIDER=deepseek`) |
@@ -233,7 +235,7 @@ async def main() -> None:
 
 **Индексация** (`ingest_queue`): проверяется, что запрашивающий — владелец документа → файл скачивается из MinIO во временный каталог → парсится подходящим парсером (`ParserFactory`: `.md`, `.pdf`, `.docx`, остальное — unstructured auto; для PDF — выбранная OCR-стратегия) → текст режется на чанки (~512 символов, по границам слов) → каждому чанку присваивается детерминированный UUID (`uuid5` от `doc_id:idx:chunk_idx` — повторная индексация обновляет точки, а не дублирует) → эмбеддинги (`passage: `-префикс) → upsert в Qdrant с payload `{text, doc_id, owner_id, access_group, page, header, type, table_html?, embedding_model}` → статус в Postgres: `pending → indexed` (или `failed`).
 
-**Ответ на вопрос** (`query_queue`): вопрос эмбеддируется (с `query: `-префиксом; эмбеддинги кэшируются) → гибридный поиск по Qdrant: векторный top_k с фильтром доступа (`owner_id == user` ИЛИ `access_group` ∈ групп пользователя; группы берутся из JWT-claim `groups`, иначе из таблицы `user_groups` в Postgres) + при `SEARCH_HYBRID=true` лексические кандидаты (full-text индекс по `text`) с BM25-ранжированием и RRF-слиянием → чанки собираются в контекст → LLM (`LLM_PROVIDER`, `LLM_TEMPERATURE`, кэш ответов, circuit breaker) генерирует ответ строго по контексту → вопрос, ответ и источники сохраняются в `conversations`, а результат публикуется продюсеру: в очередь из `reply_to` входящего сообщения (RPC-паттерн, `correlation_id` сохраняется) либо в общую `query_reply_queue`.
+**Ответ на вопрос** (`query_queue`): вопрос эмбеддируется (с `query: `-префиксом; эмбеддинги кэшируются) → гибридный поиск по Qdrant: векторный top_k с фильтром доступа (`owner_id == user` ИЛИ `access_group` ∈ групп пользователя; группы берутся из JWT-claim `groups`, иначе из таблицы `user_groups` в Postgres) + при `SEARCH_HYBRID=true` лексические кандидаты (full-text индекс по `text`) с BM25-ранжированием и RRF-слиянием → чанки собираются в контекст → LLM (провайдер по умолчанию `LLM_PROVIDER`, либо per-request `llm_provider`/`llm_model` из сообщения при включённом `LLM_ENABLED_PROVIDERS`; `LLM_TEMPERATURE`, кэш ответов, circuit breaker) генерирует ответ строго по контексту → вопрос, ответ и источники сохраняются в `conversations`, а результат публикуется продюсеру: в очередь из `reply_to` входящего сообщения (RPC-паттерн, `correlation_id` сохраняется) либо в общую `query_reply_queue`.
 
 **Удаление** (`delete_queue`): только владелец → удаление векторов документа из Qdrant → (опционально) удаление файла из MinIO → soft-delete в Postgres.
 
@@ -297,8 +299,12 @@ tests/                         # pytest, double'ы в conftest.py
 
 ## Известные ограничения
 
-- **Очередь LLM-провайдера одна на воркер**: выбор провайдера глобальный (`LLM_PROVIDER`), per-request роутинг между моделями не поддерживается.
+- **Один LLM-клиент на (провайдер, модель)**: per-request роутинг реализован через `LLM_ENABLED_PROVIDERS` + поля `llm_provider`/`llm_model` в запросе; инстансы клиентов кэшируются лениво по комбинации (провайдер, модель) — при большом разнообразии моделей в `LLM_ALLOWED_MODELS` растёт число объектов-клиентов (лёгкие обёртки, без постоянных соединений).
 - Для реального OCR (`ocr_only`/`hi_res` на сканах) требуются `tesseract` и `poppler` в образе воркера.
 - `faithfulness` в evaluation — лексическая эвристика (n-граммное перекрытие с источниками), а не семантический судья; для строгой оценки подключите LLM-as-judge.
 - mutmut на Windows запускается только через WSL.
 - Golden-датасет (`eval/golden_dataset.json`) — образец с placeholder-идентификаторами; наполните реальными кейсами по вашим документам.
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE).

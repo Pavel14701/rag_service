@@ -23,13 +23,13 @@ from application.interfaces import TokenValidator
 
 # Algorithms this module is designed to accept (validated in Settings too).
 SUPPORTED_ALGORITHMS = (
-    "HS256",
-    "HS384",
-    "HS512",
-    "RS256",
-    "RS384",
-    "RS512",
-    "ES256",
+    'HS256',
+    'HS384',
+    'HS512',
+    'RS256',
+    'RS384',
+    'RS512',
+    'ES256',
 )
 
 
@@ -51,31 +51,32 @@ class JWTValidator(TokenValidator):
     def __init__(
         self,
         keys: str | Sequence[str],
-        algorithm: str = "HS256",
+        algorithm: str = 'HS256',
         issuer: str | None = None,
         audience: str | None = None,
         blacklist: TokenBlacklist | None = None,
     ) -> None:
         if algorithm not in SUPPORTED_ALGORITHMS:
-            raise ValueError(f"Unsupported JWT algorithm: {algorithm}")
+            raise ValueError(f'Unsupported JWT algorithm: {algorithm}')
         self._keys = [keys] if isinstance(keys, str) else list(keys)
         if not self._keys:
-            raise ValueError("At least one verification key is required")
+            raise ValueError('At least one verification key is required')
         self._algorithm = algorithm
         self._issuer = issuer
         self._audience = audience
         self._blacklist = blacklist
 
     def validate(self, token: str) -> dict[str, str]:
+        """Validate a JWT and return its claims."""
         # Defense in depth: reject tokens whose alg header does not match
         # the configured algorithm before any key is touched.
         try:
             header = jwt.get_unverified_header(token)
         except JWTError as e:
-            raise ValueError(f"Invalid token: {e}")
-        if header.get("alg") != self._algorithm:
+            raise ValueError(f'Invalid token: {e}')
+        if header.get('alg') != self._algorithm:
             raise ValueError(
-                f"Invalid token: unexpected algorithm {header.get('alg')!r}"
+                f'Invalid token: unexpected algorithm {header.get("alg")!r}'
             )
 
         payload = None
@@ -89,24 +90,26 @@ class JWTValidator(TokenValidator):
                     algorithms=[self._algorithm],
                     issuer=self._issuer,
                     audience=self._audience,
-                    options={"require_exp": True},
+                    options={'require_exp': True},
                 )
                 break
             except JWTError as e:
                 last_error = e
         if payload is None:
-            raise ValueError(f"Invalid token: {last_error}")
+            raise ValueError(f'Invalid token: {last_error}')
 
         # python-jose skips aud validation when the claim is absent,
         # so enforce its presence explicitly when configured.
-        if self._audience and "aud" not in payload:
-            raise ValueError("Invalid token: Token is missing the audience claim")
+        if self._audience and 'aud' not in payload:
+            raise ValueError(
+                'Invalid token: Token is missing the audience claim'
+            )
 
         if self._blacklist is not None:
-            jti = payload.get("jti")
+            jti = payload.get('jti')
             if not jti:
-                raise ValueError("Invalid token: missing jti claim")
+                raise ValueError('Invalid token: missing jti claim')
             if self._blacklist.contains(jti):
-                raise ValueError("Invalid token: token has been revoked")
+                raise ValueError('Invalid token: token has been revoked')
 
-        return payload
+        return dict(payload)

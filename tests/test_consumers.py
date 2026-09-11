@@ -171,6 +171,27 @@ async def test_query_consumer_calls_retriever(deps, repo, vector_store, llm):
     assert len(llm.calls) == 1
 
 
+async def test_query_consumer_routes_llm_provider_per_request(deps, repo, vector_store, llm):
+    doc = make_document(owner_id="user-1")
+    await repo.save(doc)
+    vector_store.search_results = [
+        {"id": "c1", "score": 0.9, "payload": {"doc_id": str(doc.id)}, "text": "t"}
+    ]
+    consumer = QueryConsumer(deps.container)
+
+    await consumer.handle(
+        {
+            "token": "tok:user-1",
+            "query": "hi",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o",
+        }
+    )
+
+    assert llm.calls[-1]["provider"] == "openai"
+    assert llm.calls[-1]["model"] == "gpt-4o"
+
+
 async def test_query_consumer_publishes_reply_to_reply_to_queue(
     deps, repo, vector_store
 ):

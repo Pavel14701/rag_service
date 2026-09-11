@@ -133,6 +133,34 @@ async def test_owner_document_accessible_even_when_not_in_doc_group(service, rep
     assert filt["should"][0] == {"key": "owner_id", "match": {"value": "u1"}}
 
 
+async def test_per_request_llm_routing(service, repo, vector_store, llm):
+    doc = make_document(owner_id="u1")
+    await repo.save(doc)
+    vector_store.search_results = [
+        {"id": "c1", "score": 0.9, "payload": {"doc_id": str(doc.id)}, "text": "t"}
+    ]
+
+    await service.answer_query(
+        user_id="u1", query="question", llm_provider="openai", llm_model="gpt-4o"
+    )
+
+    assert llm.calls[-1]["provider"] == "openai"
+    assert llm.calls[-1]["model"] == "gpt-4o"
+
+
+async def test_no_routing_request_uses_default_generate(service, repo, vector_store, llm):
+    doc = make_document(owner_id="u1")
+    await repo.save(doc)
+    vector_store.search_results = [
+        {"id": "c1", "score": 0.9, "payload": {"doc_id": str(doc.id)}, "text": "t"}
+    ]
+
+    await service.answer_query(user_id="u1", query="question")
+
+    assert llm.calls[-1]["provider"] is None  # default generate path
+
+
+
 def test_system_prompt_rules(service):
     prompt = service._build_system_prompt()
     assert "ONLY information from the context" in prompt

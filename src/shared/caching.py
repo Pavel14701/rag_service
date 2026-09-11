@@ -26,7 +26,7 @@ class TTLCache:
         digest = hashlib.sha256()
         for part in parts:
             digest.update(str(part).encode())
-            digest.update(b"\x00")
+            digest.update(b'\x00')
         return digest.hexdigest()
 
     def get(self, key: str) -> Any | None:
@@ -49,9 +49,11 @@ class TTLCache:
             self._data.popitem(last=False)
 
     def clear(self) -> None:
+        """Drop all cached entries."""
         self._data.clear()
 
     def __len__(self) -> int:
+        """Number of currently stored entries."""
         return len(self._data)
 
 
@@ -69,7 +71,7 @@ class RedisCache:
         self,
         url: str,
         ttl: float = 3600.0,
-        prefix: str = "rag",
+        prefix: str = 'rag',
         client: Any | None = None,
     ) -> None:
         if client is not None:
@@ -87,9 +89,10 @@ class RedisCache:
         self._prefix = prefix
 
     def _key(self, key: str) -> str:
-        return f"{self._prefix}:{key}"
+        return f'{self._prefix}:{key}'
 
     def get(self, key: str) -> Any | None:
+        """Return the cached value or None on miss, expiry or error."""
         try:
             raw = self._client.get(self._key(key))
         except Exception:  # noqa: BLE001 - cache must never break the app
@@ -102,6 +105,7 @@ class RedisCache:
             return None
 
     def set(self, key: str, value: Any) -> None:
+        """Store the value under the namespaced key."""
         try:
             self._client.setex(
                 self._key(key),
@@ -112,8 +116,9 @@ class RedisCache:
             pass
 
     def clear(self) -> None:
+        """Delete all keys under the namespace prefix."""
         try:
-            pattern = f"{self._prefix}:*"
+            pattern = f'{self._prefix}:*'
             keys = list(self._client.scan_iter(match=pattern))
             if keys:
                 self._client.delete(*keys)
@@ -121,8 +126,11 @@ class RedisCache:
             pass
 
     def __len__(self) -> int:
+        """Number of keys under the namespace prefix."""
         try:
-            return sum(1 for _ in self._client.scan_iter(match=f"{self._prefix}:*"))
+            return sum(
+                1 for _ in self._client.scan_iter(match=f'{self._prefix}:*')
+            )
         except Exception:  # noqa: BLE001
             return 0
 
@@ -138,6 +146,13 @@ class SharedCaches:
     def __init__(self, redis: RedisCache | None) -> None:
         self.redis = redis
 
-    def pick(self, maxsize: int, ttl: float) -> "RedisCache | TTLCache":
+    def pick(self, maxsize: int, ttl: float) -> 'RedisCache | TTLCache':
         """Shared Redis cache when configured, else a fresh TTLCache."""
-        return self.redis if self.redis is not None else TTLCache(maxsize=maxsize, ttl=ttl)
+        return (
+            self.redis
+            if self.redis is not None
+            else TTLCache(maxsize=maxsize, ttl=ttl)
+        )
+
+
+Cache = TTLCache | RedisCache

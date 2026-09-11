@@ -1,13 +1,13 @@
 """Sentence-transformers embedding model."""
 
-from typing import List
+from typing import Any, List, Optional
 import asyncio
 from functools import partial
 
 from sentence_transformers import SentenceTransformer
 
 from application.interfaces import EmbeddingModel
-from shared.caching import TTLCache
+from shared.caching import Cache, TTLCache
 
 
 class SentenceTransformerEmbedding(EmbeddingModel):
@@ -28,11 +28,11 @@ class SentenceTransformerEmbedding(EmbeddingModel):
     def __init__(
         self,
         model_name: str,
-        query_prefix: str = "",
-        passage_prefix: str = "",
+        query_prefix: str = '',
+        passage_prefix: str = '',
         device: str | None = None,
         batch_size: int | None = None,
-        query_cache: TTLCache | None = None,
+        query_cache: Cache | None = None,
     ) -> None:
         if device:
             self._model = SentenceTransformer(model_name, device=device)
@@ -44,18 +44,20 @@ class SentenceTransformerEmbedding(EmbeddingModel):
         self._query_cache = query_cache
 
     async def embed(self, texts: List[str]) -> List[List[float]]:
+        """Embed raw texts without any prefix handling."""
         loop = asyncio.get_running_loop()
-        kwargs: dict = {
-            "convert_to_numpy": True,
-            "show_progress_bar": False,
+        kwargs: dict[str, Any] = {
+            'convert_to_numpy': True,
+            'show_progress_bar': False,
         }
         if self._batch_size is not None:
-            kwargs["batch_size"] = self._batch_size
+            kwargs['batch_size'] = self._batch_size
         encode = partial(self._model.encode, texts, **kwargs)
         embeddings = await loop.run_in_executor(None, encode)
         return [emb.tolist() for emb in embeddings]
 
     async def embed_query(self, texts: List[str]) -> List[List[float]]:
+        """Embed query texts with the query prefix and caching."""
         if self._query_cache is None:
             return await self.embed(texts)
 
@@ -69,10 +71,16 @@ class SentenceTransformerEmbedding(EmbeddingModel):
             computed = await self.embed([text for _, text, _ in missing])
             for (_, _, key), vector in zip(missing, computed):
                 self._query_cache.set(key, vector)
-        return [self._query_cache.get(key) for key in keys]
+        results: list[Optional[List[float]]] = [
+            self._query_cache.get(key) for key in keys
+        ]
+        return [vector for vector in results if vector is not None]
 
     async def embed_passages(self, texts: List[str]) -> List[List[float]]:
-        return await self.embed([f"{self._passage_prefix}{t}" for t in texts])
+        """Embed passage texts with the passage prefix."""
+        return await self.embed([f'{self._passage_prefix}{t}' for t in texts])
 
     def dimension(self) -> int:
-        return self._model.get_sentence_embedding_dimension()
+        """Return the embedding vector dimension."""
+        dimension = self._model.get_sentence_embedding_dimension()
+        return int(dimension) if dimension is not None else 0

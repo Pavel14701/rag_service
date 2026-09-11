@@ -14,11 +14,11 @@ import json
 import time
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, cast
 
 import aio_pika
 import structlog
-from aio_pika import DeliveryMode, IncomingMessage
+from aio_pika import DeliveryMode
 from dishka import AsyncContainer
 from opentelemetry.trace import Status, StatusCode
 
@@ -31,8 +31,8 @@ logger = structlog.get_logger(__name__)
 # Exponential backoff delays for message retries (in milliseconds).
 RETRY_DELAYS_MS: tuple[int, ...] = (5_000, 30_000, 120_000)
 
-RETRY_COUNT_HEADER = "x-retry-count"
-REQUEST_ID_HEADER = "x-request-id"
+RETRY_COUNT_HEADER = 'x-retry-count'
+REQUEST_ID_HEADER = 'x-request-id'
 
 
 class BaseConsumer(ABC):
@@ -48,7 +48,9 @@ class BaseConsumer(ABC):
         self._container = container
         # Currently processed message (reply_to / correlation_id context
         # for handlers that respond to the producer).
-        self._current_message: IncomingMessage | None = None
+        self._current_message: aio_pika.abc.AbstractIncomingMessage | None = (
+            None
+        )
 
     async def start(self) -> None:
         """Start consuming messages from the queue."""
@@ -63,37 +65,42 @@ class BaseConsumer(ABC):
                 durable=True,
                 arguments={
                     # Rejected (nack without requeue) messages go to the DLQ.
-                    "x-dead-letter-exchange": f"{self._queue_name}.dlx",
-                    "x-dead-letter-routing-key": self._queue_name,
+                    'x-dead-letter-exchange': f'{self._queue_name}.dlx',
+                    'x-dead-letter-routing-key': self._queue_name,
                 },
             )
             await queue.consume(self._on_message)
             await asyncio.Future()
 
-    async def _declare_topology(self, channel: aio_pika.abc.AbstractChannel) -> None:
+    async def _declare_topology(
+        self, channel: aio_pika.abc.AbstractChannel
+    ) -> None:
         """Declare DLX/DLQ and retry TTL queues for this consumer's queue."""
         dlx = await channel.declare_exchange(
-            f"{self._queue_name}.dlx",
+            f'{self._queue_name}.dlx',
             aio_pika.ExchangeType.DIRECT,
             durable=True,
         )
-        dlq = await channel.declare_queue(f"{self._queue_name}.dlq", durable=True)
+        dlq = await channel.declare_queue(
+            f'{self._queue_name}.dlq', durable=True
+        )
         await dlq.bind(dlx, routing_key=self._queue_name)
 
         retry_exchange = await channel.declare_exchange(
-            f"{self._queue_name}.retry",
+            f'{self._queue_name}.retry',
             aio_pika.ExchangeType.DIRECT,
             durable=True,
         )
         for delay in RETRY_DELAYS_MS:
             retry_queue = await channel.declare_queue(
-                f"{self._queue_name}.retry.{delay}",
+                f'{self._queue_name}.retry.{delay}',
                 durable=True,
                 arguments={
-                    # After the TTL expires, the message returns to the main queue.
-                    "x-dead-letter-exchange": "",
-                    "x-dead-letter-routing-key": self._queue_name,
-                    "x-message-ttl": delay,
+                    # After the TTL expires, the message
+                    # returns to the main queue.
+                    'x-dead-letter-exchange': '',
+                    'x-dead-letter-routing-key': self._queue_name,
+                    'x-message-ttl': delay,
                 },
             )
             await retry_queue.bind(retry_exchange, routing_key=str(delay))
@@ -104,7 +111,9 @@ class BaseConsumer(ABC):
         """Declare consumer-specific queues/exchanges (no-op by default)."""
         return None
 
-    async def _on_message(self, message: IncomingMessage) -> None:
+    async def _on_message(
+        self, message: aio_pika.abc.AbstractIncomingMessage
+    ) -> None:
         headers = dict(message.headers or {})
         request_id = str(headers.get(REQUEST_ID_HEADER) or uuid.uuid4())
 
@@ -114,24 +123,24 @@ class BaseConsumer(ABC):
         start = time.perf_counter()
         self._current_message = message
         try:
-            with get_tracer().start_as_current_span("message.process") as span:
-                span.set_attribute("mq.queue", self._queue_name)
-                span.set_attribute("request.id", request_id)
+            with get_tracer().start_as_current_span('message.process') as span:
+                span.set_attribute('mq.queue', self._queue_name)
+                span.set_attribute('request.id', request_id)
                 async with message.process(ignore_processed=True):
                     try:
                         body = json.loads(message.body.decode())
                         await self.handle(body)
                         MESSAGES_TOTAL.labels(
-                            queue=self._queue_name, status="success"
+                            queue=self._queue_name, status='success'
                         ).inc()
                     except Exception as e:
                         logger.exception(
-                            "message_processing_failed",
+                            'message_processing_failed',
                             error=str(e),
                             queue=self._queue_name,
                         )
                         MESSAGES_TOTAL.labels(
-                            queue=self._queue_name, status="error"
+                            queue=self._queue_name, status='error'
                         ).inc()
                         span.set_status(Status(StatusCode.ERROR, str(e)))
                         span.record_exception(e)
@@ -144,7 +153,7 @@ class BaseConsumer(ABC):
             self._current_message = None
 
     async def _retry_or_dead_letter(
-        self, message: IncomingMessage, request_id: str
+        self, message: aio_pika.abc.AbstractIncomingMessage, request_id: str
     ) -> None:
         """Schedule a retry with exponential backoff or move to the DLQ.
 
@@ -156,44 +165,50 @@ class BaseConsumer(ABC):
         """
         headers = dict(message.headers or {})
         headers[REQUEST_ID_HEADER] = request_id
-        attempt = int(headers.get(RETRY_COUNT_HEADER, 0))
+        raw_count: Any = headers.get(RETRY_COUNT_HEADER, 0)
+        attempt = int(raw_count)
+        channel = cast(aio_pika.RobustChannel, message.channel)
         try:
             if attempt < len(RETRY_DELAYS_MS):
                 delay = RETRY_DELAYS_MS[attempt]
                 headers[RETRY_COUNT_HEADER] = attempt + 1
-                await message.channel.default_exchange.publish(
+                await channel.default_exchange.publish(
                     aio_pika.Message(
                         body=message.body,
                         headers=headers,
                         delivery_mode=DeliveryMode.PERSISTENT,
                     ),
-                    routing_key=f"{self._queue_name}.retry.{delay}",
+                    routing_key=f'{self._queue_name}.retry.{delay}',
                 )
-                MESSAGES_TOTAL.labels(queue=self._queue_name, status="retry").inc()
+                MESSAGES_TOTAL.labels(
+                    queue=self._queue_name, status='retry'
+                ).inc()
                 logger.warning(
-                    "message_retry_scheduled",
+                    'message_retry_scheduled',
                     attempt=attempt + 1,
                     max_retries=len(RETRY_DELAYS_MS),
                     delay_ms=delay,
                     queue=self._queue_name,
                 )
             else:
-                await message.channel.default_exchange.publish(
+                await channel.default_exchange.publish(
                     aio_pika.Message(
                         body=message.body,
                         headers=headers,
                         delivery_mode=DeliveryMode.PERSISTENT,
                     ),
-                    routing_key=f"{self._queue_name}.dlq",
+                    routing_key=f'{self._queue_name}.dlq',
                 )
-                MESSAGES_TOTAL.labels(queue=self._queue_name, status="dlq").inc()
+                MESSAGES_TOTAL.labels(
+                    queue=self._queue_name, status='dlq'
+                ).inc()
                 logger.error(
-                    "message_moved_to_dlq",
+                    'message_moved_to_dlq',
                     queue=self._queue_name,
                     retries=attempt,
                 )
         except Exception:
-            logger.exception("retry_publish_failed", queue=self._queue_name)
+            logger.exception('retry_publish_failed', queue=self._queue_name)
 
     @abstractmethod
     async def handle(self, data: dict[str, Any]) -> None:

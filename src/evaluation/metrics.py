@@ -14,13 +14,13 @@ import math
 import re
 from collections.abc import Sequence
 
-_SPLIT_RE = re.compile(r"[^\w]+", re.UNICODE)
+_SPLIT_RE = re.compile(r'[^\w]+', re.UNICODE)
 
 _REFUSAL_MARKERS = (
     "i don't have enough information",
     "i don't know",
-    "i cannot answer",
-    "not in the context",
+    'i cannot answer',
+    'not in the context',
 )
 
 
@@ -91,7 +91,9 @@ def ndcg_at_k(
     return dcg / idcg if idcg else 0.0
 
 
-def faithfulness(answer: str, source_texts: Sequence[str], n: int = 3) -> float:
+def faithfulness(
+    answer: str, source_texts: Sequence[str], n: int = 3
+) -> float:
     """Lexical grounding heuristic for an answer against its sources.
 
     The fraction of the answer's word n-grams that also appear in the
@@ -114,7 +116,7 @@ def faithfulness(answer: str, source_texts: Sequence[str], n: int = 3) -> float:
 
 def is_refusal(answer: str) -> bool:
     """True when the answer is a non-informative refusal."""
-    normalized = " ".join(answer.lower().split())
+    normalized = ' '.join(answer.lower().split())
     return any(marker in normalized for marker in _REFUSAL_MARKERS)
 
 

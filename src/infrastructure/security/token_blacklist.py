@@ -1,6 +1,7 @@
 """Token revocation stores (JWT blacklist by ``jti`` claim)."""
 
 import time
+from typing import Any
 
 
 class InMemoryTokenBlacklist:
@@ -24,6 +25,7 @@ class InMemoryTokenBlacklist:
             del self._revoked[key]
 
     def contains(self, jti: str) -> bool:
+        """True when the given token ID is revoked."""
         until = self._revoked.get(jti)
         return until is not None and until > time.time()
 
@@ -35,12 +37,16 @@ class RedisTokenBlacklist:
     remaining lifetime, so the blacklist self-cleans.
     """
 
-    def __init__(self, redis_client, prefix: str = "rag:revoked-jti") -> None:
+    def __init__(
+        self, redis_client: Any, prefix: str = 'rag:revoked-jti'
+    ) -> None:
         self._client = redis_client
         self._prefix = prefix
 
     def revoke(self, jti: str, ttl: float) -> None:
-        self._client.setex(f"{self._prefix}:{jti}", max(int(ttl), 1), "1")
+        """Store the revoked jti in Redis until the token would expire."""
+        self._client.setex(f'{self._prefix}:{jti}', max(int(ttl), 1), '1')
 
     def contains(self, jti: str) -> bool:
-        return bool(self._client.exists(f"{self._prefix}:{jti}"))
+        """True when the token ID is present in Redis."""
+        return bool(self._client.exists(f'{self._prefix}:{jti}'))

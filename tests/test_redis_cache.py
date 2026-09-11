@@ -121,7 +121,7 @@ async def test_container_uses_ttl_cache_without_redis_url(monkeypatch):
     monkeypatch.setenv("JWT_SECRET", "test-secret")
     monkeypatch.delenv("REDIS_URL", raising=False)
     container = create_container()
-    client = await container.get(LLMGenerator)
+    client = (await container.get(LLMGenerator)).default_client
     assert type(client._cache) is TTLCache
 
 
@@ -133,5 +133,5 @@ async def test_container_uses_redis_cache_with_redis_url(monkeypatch):
     monkeypatch.setenv("JWT_SECRET", "test-secret")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     container = create_container()
-    client = await container.get(LLMGenerator)
+    client = (await container.get(LLMGenerator)).default_client
     assert type(client._cache) is RedisCache  # redis-py connects lazily

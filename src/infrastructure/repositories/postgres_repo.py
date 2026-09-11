@@ -15,13 +15,19 @@ from application.interfaces import DocumentRepository
 
 # SQLAlchemy ORM Models
 class Base(DeclarativeBase):
+    """Declarative SQLAlchemy base."""
+
     pass
 
 
 class DocumentORM(Base):
-    __tablename__ = "documents"
+    """ORM table for document metadata."""
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    __tablename__ = 'documents'
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     file_name: Mapped[str] = mapped_column(nullable=False)
     file_path: Mapped[str] = mapped_column(nullable=False)
     file_hash: Mapped[str] = mapped_column(nullable=False)
@@ -33,9 +39,13 @@ class DocumentORM(Base):
 
 
 class ConversationORM(Base):
-    __tablename__ = "conversations"
+    """ORM table for stored conversations."""
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    __tablename__ = 'conversations'
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(nullable=False, index=True)
     query: Mapped[str] = mapped_column(nullable=False)
     response: Mapped[str] = mapped_column(nullable=False)
@@ -46,7 +56,7 @@ class ConversationORM(Base):
 class UserGroupORM(Base):
     """User membership in access groups (managed via ``set_user_groups``)."""
 
-    __tablename__ = "user_groups"
+    __tablename__ = 'user_groups'
 
     user_id: Mapped[str] = mapped_column(primary_key=True)
     group_name: Mapped[str] = mapped_column(primary_key=True)
@@ -68,6 +78,7 @@ class PostgresDocumentRepository(DocumentRepository):
         self._read_session_factory = read_session_factory or session_factory
 
     async def get_document(self, doc_id: uuid.UUID) -> Document | None:
+        """Retrieve a document by its ID."""
         async with self._read_session_factory() as session:
             stmt = select(DocumentORM).where(
                 and_(DocumentORM.id == doc_id, DocumentORM.deleted.is_(False))
@@ -79,6 +90,7 @@ class PostgresDocumentRepository(DocumentRepository):
             return self._to_domain(row)
 
     async def get_all_active(self) -> list[Document]:
+        """Get all non-deleted documents."""
         async with self._read_session_factory() as session:
             stmt = select(DocumentORM).where(DocumentORM.deleted.is_(False))
             result = await session.execute(stmt)
@@ -86,12 +98,16 @@ class PostgresDocumentRepository(DocumentRepository):
             return [self._to_domain(row) for row in rows]
 
     async def save(self, document: Document) -> None:
+        """Persist or update a document record."""
         async with self._session_factory() as session:
             orm = self._from_domain(document)
             session.add(orm)
             await session.commit()
 
-    async def update_status(self, doc_id: uuid.UUID, status: DocStatus) -> None:
+    async def update_status(
+        self, doc_id: uuid.UUID, status: DocStatus
+    ) -> None:
+        """Update the indexing status of a document."""
         async with self._session_factory() as session:
             stmt = (
                 update(DocumentORM)
@@ -102,6 +118,7 @@ class PostgresDocumentRepository(DocumentRepository):
             await session.commit()
 
     async def mark_deleted(self, doc_id: uuid.UUID) -> None:
+        """Soft-delete a document."""
         async with self._session_factory() as session:
             stmt = (
                 update(DocumentORM)
@@ -112,6 +129,7 @@ class PostgresDocumentRepository(DocumentRepository):
             await session.commit()
 
     async def get_user_groups(self, user_id: str) -> list[str]:
+        """Return the ACL groups the user belongs to."""
         async with self._read_session_factory() as session:
             stmt = select(UserGroupORM.group_name).where(
                 UserGroupORM.user_id == user_id
@@ -120,6 +138,7 @@ class PostgresDocumentRepository(DocumentRepository):
             return list(rows)
 
     async def set_user_groups(self, user_id: str, groups: list[str]) -> None:
+        """Replace the ACL group membership of the user."""
         async with self._session_factory() as session:
             await session.execute(
                 delete(UserGroupORM).where(UserGroupORM.user_id == user_id)
@@ -135,6 +154,7 @@ class PostgresDocumentRepository(DocumentRepository):
         response: str,
         sources: list[dict[str, Any]],
     ) -> None:
+        """Store a conversation record."""
         async with self._session_factory() as session:
             conv = ConversationORM(
                 user_id=user_id,

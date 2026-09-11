@@ -9,9 +9,9 @@ from datetime import datetime
 class DocStatus(str, Enum):
     """Possible statuses of a document."""
 
-    PENDING = "pending"
-    INDEXED = "indexed"
-    FAILED = "failed"
+    PENDING = 'pending'
+    INDEXED = 'indexed'
+    FAILED = 'failed'
 
 
 @dataclass

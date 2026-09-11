@@ -31,14 +31,14 @@ class VectorStore(Protocol):
         filter_condition: dict[str, Any] | None = None,
         keyword_query: str | None = None,
     ) -> list[dict[str, Any]]:
-        """
-        Perform similarity search.
+        """Perform similarity search.
 
         When ``keyword_query`` is provided, results are fused with a
         lexical (BM25) ranking over full-text candidates (hybrid search).
 
         Returns:
             list of hits, each containing 'id', 'score', 'payload', and optionally 'text'.
+
         """  # noqa: E501
         ...
 

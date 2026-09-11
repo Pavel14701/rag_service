@@ -164,7 +164,7 @@ async def test_container_selects_openai_provider(monkeypatch):
         OPENAI_API_KEY="sk-test",
         LLM_MODEL="gpt-4o-mini",
     )
-    client = await create_container().get(LLMGenerator)
+    client = (await create_container().get(LLMGenerator)).default_client
     assert type(client) is OpenAIChatClient
     assert client._model == "gpt-4o-mini"
 
@@ -174,7 +174,7 @@ async def test_container_selects_anthropic_provider(monkeypatch):
     from application.interfaces import LLMGenerator
 
     _container_env(monkeypatch, LLM_PROVIDER="anthropic", ANTHROPIC_API_KEY="ak-test")
-    client = await create_container().get(LLMGenerator)
+    client = (await create_container().get(LLMGenerator)).default_client
     assert type(client) is AnthropicClient
     assert client._model == "claude-3-5-haiku-latest"
 
@@ -185,7 +185,7 @@ async def test_container_defaults_to_deepseek(monkeypatch):
 
     _container_env(monkeypatch, DEEPSEEK_API_KEY="dk-test")
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
-    client = await create_container().get(LLMGenerator)
+    client = (await create_container().get(LLMGenerator)).default_client
     assert type(client) is DeepSeekClient
 
 

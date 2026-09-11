@@ -2,6 +2,7 @@
 
 from importlib import import_module
 from pathlib import Path
+from typing import cast
 
 from .base import DocumentParser
 from .markdown_parser import MarkdownParser
@@ -11,8 +12,8 @@ from .markdown_parser import MarkdownParser
 # unavailable (e.g. on Windows without libmagic installed).
 
 _LAZY_PARSERS = {
-    ".pdf": ("infrastructure.parsing.pdf_parser", "PDFParser"),
-    ".docx": ("infrastructure.parsing.docx_parser", "DocxParser"),
+    '.pdf': ('infrastructure.parsing.pdf_parser', 'PDFParser'),
+    '.docx': ('infrastructure.parsing.docx_parser', 'DocxParser'),
 }
 
 
@@ -24,8 +25,8 @@ class ParserFactory:
     ``PDF_OCR_STRATEGY`` / ``PDF_OCR_LANGUAGES`` settings).
     """
 
-    pdf_ocr_strategy: str = "auto"
-    pdf_ocr_languages: str = "eng"
+    pdf_ocr_strategy: str = 'auto'
+    pdf_ocr_languages: str = 'eng'
 
     @classmethod
     def configure(cls, strategy: str, languages: str) -> None:
@@ -35,28 +36,35 @@ class ParserFactory:
 
     @staticmethod
     def get_parser(file_path: Path) -> DocumentParser:
-        """
-        Return a parser instance based on file extension.
+        """Return a parser instance based on file extension.
 
         Args:
             file_path: Path to the file.
 
         Returns:
             A DocumentParser implementation.
+
         """
         ext = file_path.suffix.lower()
-        if ext == ".md":
+        if ext == '.md':
             return MarkdownParser()
-        if ext == ".pdf":
+        if ext == '.pdf':
             pdf_parser_cls = getattr(
-                import_module("infrastructure.parsing.pdf_parser"), "PDFParser"
+                import_module('infrastructure.parsing.pdf_parser'), 'PDFParser'
             )
-            return pdf_parser_cls(
-                strategy=ParserFactory.pdf_ocr_strategy,
-                languages=ParserFactory.pdf_ocr_languages,
+            return cast(
+                DocumentParser,
+                pdf_parser_cls(
+                    strategy=ParserFactory.pdf_ocr_strategy,
+                    languages=ParserFactory.pdf_ocr_languages,
+                ),
             )
         module_name, class_name = _LAZY_PARSERS.get(
-            ext, ("infrastructure.parsing.unstructured_parser", "UnstructuredParser")
+            ext,
+            (
+                'infrastructure.parsing.unstructured_parser',
+                'UnstructuredParser',
+            ),
         )
         parser_cls = getattr(import_module(module_name), class_name)
-        return parser_cls()
+        return cast(DocumentParser, parser_cls())

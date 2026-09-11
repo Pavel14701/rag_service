@@ -236,6 +236,27 @@ class FakeLLM:
     async def generate(self, system_prompt: str, user_prompt: str, temperature: float = 0.1) -> str:
         self.calls.append(
             {
+                "provider": None,
+                "model": None,
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "temperature": temperature,
+            }
+        )
+        return self.response
+
+    async def generate_with(
+        self,
+        provider: str | None,
+        model: str | None,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.1,
+    ) -> str:
+        self.calls.append(
+            {
+                "provider": provider,
+                "model": model,
                 "system_prompt": system_prompt,
                 "user_prompt": user_prompt,
                 "temperature": temperature,
