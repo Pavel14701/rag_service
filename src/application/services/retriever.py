@@ -1,6 +1,6 @@
 """RAG retrieval and answer generation service."""
 
-import logging
+import structlog
 from typing import Any
 
 from application.interfaces import (
@@ -11,7 +11,7 @@ from application.interfaces import (
 )
 from domain.exceptions import PermissionDeniedError
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class RetrieverService:
@@ -25,6 +25,8 @@ class RetrieverService:
         llm: LLMGenerator,
         default_top_k: int = 5,
         default_temperature: float = 0.1,
+        hybrid_enabled: bool = False,
+        hybrid_rrf_k: int = 60,
     ) -> None:
         self._vector_store = vector_store
         self._repo = repo
@@ -32,6 +34,8 @@ class RetrieverService:
         self._llm = llm
         self._default_top_k = default_top_k
         self._default_temperature = default_temperature
+        self._hybrid_enabled = hybrid_enabled
+        self._hybrid_rrf_k = hybrid_rrf_k
 
     async def answer_query(
         self,
@@ -76,14 +80,15 @@ class RetrieverService:
         else:
             filter_cond = {"key": "owner_id", "match": {"value": user_id}}
 
-        # Embed query
-        query_vec = (await self._embedding.embed([query]))[0]
+        # Embed query (E5 models require the "query: " prefix)
+        query_vec = (await self._embedding.embed_query([query]))[0]
 
-        # Search
+        # Search (hybrid: vector ranking fused with lexical BM25 when enabled)
         hits = await self._vector_store.search(
             vector=query_vec,
             top_k=top_k,
             filter_condition=filter_cond,
+            keyword_query=query if self._hybrid_enabled else None,
         )
 
         context_parts: list[str] = []
@@ -100,7 +105,7 @@ class RetrieverService:
             })
 
         if not context_parts:
-            logger.info(f"No relevant context for user {user_id}")
+            logger.info("no_relevant_context", user_id=user_id)
             answer = "I don't have enough information to answer that."
             context = ""
         else:

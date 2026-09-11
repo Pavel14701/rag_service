@@ -29,13 +29,25 @@ class VectorStore(Protocol):
         vector: list[float],
         top_k: int,
         filter_condition: dict[str, Any] | None = None,
+        keyword_query: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Perform similarity search.
 
+        When ``keyword_query`` is provided, results are fused with a
+        lexical (BM25) ranking over full-text candidates (hybrid search).
+
         Returns:
             list of hits, each containing 'id', 'score', 'payload', and optionally 'text'.
         """  # noqa: E501
+        ...
+
+    async def scroll_first_payload(self) -> dict[str, Any] | None:
+        """Return the payload of an arbitrary stored point, or None.
+
+        Used to detect which embedding model version the stored vectors
+        were built with (model-version marker for migration reindexing).
+        """
         ...
 
     async def delete_by_filter(self, filter_condition: dict[str, Any]) -> None:

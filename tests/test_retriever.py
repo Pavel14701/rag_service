@@ -100,3 +100,34 @@ def test_system_prompt_rules(service):
     prompt = service._build_system_prompt()
     assert "ONLY information from the context" in prompt
     assert "I don't know" in prompt
+
+
+async def test_query_uses_embed_query(service, embedding):
+    await service.answer_query(user_id="u1", query="find me")
+    assert embedding.query_calls == [["find me"]]
+    assert embedding.passage_calls == []
+
+
+async def test_hybrid_disabled_passes_no_keyword_query(repo, vector_store, embedding, llm):
+    service = RetrieverService(vector_store, repo, embedding, llm, hybrid_enabled=False)
+    await service.answer_query(user_id="u1", query="question")
+    assert vector_store.searches[0]["keyword_query"] is None
+
+
+async def test_hybrid_enabled_passes_keyword_query(repo, vector_store, embedding, llm):
+    service = RetrieverService(
+        vector_store, repo, embedding, llm, hybrid_enabled=True, hybrid_rrf_k=30
+    )
+    await service.answer_query(user_id="u1", query="question text")
+    assert vector_store.searches[0]["keyword_query"] == "question text"
+
+
+async def test_default_temperature_from_constructor(repo, vector_store, embedding, llm):
+    service = RetrieverService(
+        vector_store, repo, embedding, llm, default_temperature=0.7
+    )
+    vector_store.search_results = [
+        {"id": "c", "score": 0.9, "payload": {"doc_id": "d"}, "text": "t"}
+    ]
+    await service.answer_query(user_id="u1", query="q")
+    assert llm.calls[0]["temperature"] == 0.7

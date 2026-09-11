@@ -20,6 +20,7 @@ from domain.exceptions import PermissionDeniedError
 
 from conftest import (
     FakeContainer,
+    FakeMessage,
     FakeTokenValidator,
     FakeEmbedding,
     FakeFileStorage,
@@ -33,28 +34,16 @@ class RecordingConsumer(BaseConsumer):
     def __init__(self, container):
         super().__init__("recording_queue", container)
         self.handled = []
+        self.contexts = []
         self.fail_with = None
 
     async def handle(self, data):
+        from structlog.contextvars import get_contextvars
+
         if self.fail_with:
             raise self.fail_with
         self.handled.append(data)
-
-
-class FakeMessage:
-    """Minimal IncomingMessage double."""
-
-    def __init__(self, body: bytes):
-        self.body = body
-
-    def process(self):
-        return self
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        return False
+        self.contexts.append(dict(get_contextvars()))
 
 
 async def test_on_message_parses_json_and_calls_handle():
@@ -69,11 +58,62 @@ async def test_on_message_invalid_json_does_not_raise():
     assert consumer.handled == []
 
 
-async def test_on_message_handler_error_swallowed():
+async def test_on_message_handler_error_schedules_retry():
     consumer = RecordingConsumer(FakeContainer({}))
     consumer.fail_with = RuntimeError("boom")
+    msg = FakeMessage(b"{}")
+    await consumer._on_message(msg)
+    # Message republished to the first retry queue with incremented counter
+    assert len(msg.published) == 1
+    routing_key, _, headers = msg.published[0]
+    assert routing_key == "recording_queue.retry.5000"
+    assert headers["x-retry-count"] == 1
+
+
+async def test_on_message_retries_exhausted_moves_to_dlq():
+    consumer = RecordingConsumer(FakeContainer({}))
+    consumer.fail_with = RuntimeError("boom")
+    msg = FakeMessage(b"{}", headers={"x-retry-count": 3})
+    await consumer._on_message(msg)
+    assert len(msg.published) == 1
+    routing_key, _, headers = msg.published[0]
+    assert routing_key == "recording_queue.dlq"
+    assert headers["x-retry-count"] == 3
+
+
+async def test_on_message_success_does_not_republish():
+    consumer = RecordingConsumer(FakeContainer({}))
+    msg = FakeMessage(json.dumps({"a": 1}).encode())
+    await consumer._on_message(msg)
+    assert msg.published == []
+    assert consumer.handled == [{"a": 1}]
+
+
+async def test_request_id_taken_from_header_and_bound():
+    consumer = RecordingConsumer(FakeContainer({}))
+    msg = FakeMessage(b"{}", headers={"x-request-id": "req-42"})
+    await consumer._on_message(msg)
+    assert consumer.contexts[0]["request_id"] == "req-42"
+    assert consumer.contexts[0]["queue"] == "recording_queue"
+
+
+async def test_request_id_generated_when_missing():
+    consumer = RecordingConsumer(FakeContainer({}))
     await consumer._on_message(FakeMessage(b"{}"))
-    # no exception propagated
+    request_id = consumer.contexts[0]["request_id"]
+    assert isinstance(request_id, str) and len(request_id) == 36  # uuid4
+    # context cleared after processing
+    from structlog.contextvars import get_contextvars
+    assert get_contextvars() == {}
+
+
+async def test_retry_republish_propagates_request_id():
+    consumer = RecordingConsumer(FakeContainer({}))
+    consumer.fail_with = RuntimeError("boom")
+    msg = FakeMessage(b"{}", headers={"x-request-id": "req-7"})
+    await consumer._on_message(msg)
+    _, _, headers = msg.published[0]
+    assert headers["x-request-id"] == "req-7"
 
 
 @pytest.fixture

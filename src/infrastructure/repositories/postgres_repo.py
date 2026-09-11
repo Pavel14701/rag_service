@@ -44,13 +44,22 @@ class ConversationORM(Base):
 
 
 class PostgresDocumentRepository(DocumentRepository):
-    """PostgreSQL adapter using SQLAlchemy asyncio."""
+    """PostgreSQL adapter using SQLAlchemy asyncio.
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    An optional ``read_session_factory`` (pointing at a read replica)
+    is used for read queries; writes always go to the primary.
+    """
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        read_session_factory: async_sessionmaker[AsyncSession] | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._read_session_factory = read_session_factory or session_factory
 
     async def get_document(self, doc_id: uuid.UUID) -> Document | None:
-        async with self._session_factory() as session:
+        async with self._read_session_factory() as session:
             stmt = select(DocumentORM).where(
                 and_(DocumentORM.id == doc_id, DocumentORM.deleted.is_(False))
             )
@@ -61,7 +70,7 @@ class PostgresDocumentRepository(DocumentRepository):
             return self._to_domain(row)
 
     async def get_all_active(self) -> list[Document]:
-        async with self._session_factory() as session:
+        async with self._read_session_factory() as session:
             stmt = select(DocumentORM).where(DocumentORM.deleted.is_(False))
             result = await session.execute(stmt)
             rows = result.scalars().all()
@@ -94,7 +103,7 @@ class PostgresDocumentRepository(DocumentRepository):
             await session.commit()
 
     async def get_user_groups(self, user_id: str) -> list[str]:
-        # Placeholder
+        # Placeholder: will be implemented with the auth service.
         return []
 
     async def save_conversation(

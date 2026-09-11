@@ -23,6 +23,12 @@ dependencies = [
     "httpx>=0.27.0",
     "tenacity>=8.4.1",
     "beautifulsoup4>=4.12.0",
+    "prometheus-client>=0.26.0",
+    "opentelemetry-api>=1.44.0",
+    "opentelemetry-sdk>=1.44.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.44.0",
+    "redis>=8.1.0",
+    "alembic>=1.19.2",
 ]
 
 [tool.pytest.ini_options]
@@ -30,8 +36,19 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 
+[tool.mutmut]
+# Mutation testing for the core pure-logic modules (run: uv run mutmut run).
+paths_to_mutate = [
+    "src/shared/hybrid.py",
+    "src/shared/caching.py",
+    "src/shared/circuit_breaker.py",
+    "src/evaluation/metrics.py",
+]
+tests_dir = ["tests"]
+
 [dependency-groups]
 dev = [
+    "mutmut>=3.7.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
 ]

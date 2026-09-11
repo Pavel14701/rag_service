@@ -110,3 +110,37 @@ async def test_delete_by_filter():
     assert isinstance(selector, models.FilterSelector)
     assert selector.filter.must[0].key == "doc_id"
     assert selector.filter.must[0].match == models.MatchValue(value="abc")
+
+
+async def test_create_collection_with_hnsw_config():
+    client = MagicMock()
+    store = QdrantStore(client, "docs", hnsw_m=32, hnsw_ef_construct=200)
+    await store.create_collection(384)
+    kwargs = client.recreate_collection.call_args.kwargs
+    hnsw = kwargs["hnsw_config"]
+    assert isinstance(hnsw, models.HnswConfigDiff)
+    assert hnsw.m == 32
+    assert hnsw.ef_construct == 200
+
+
+async def test_create_collection_without_hnsw_config():
+    store, client = make_store()
+    await store.create_collection(384)
+    assert "hnsw_config" not in client.recreate_collection.call_args.kwargs
+
+
+async def test_search_with_hnsw_ef_search_param():
+    client = MagicMock()
+    client.query_points.return_value = SimpleNamespace(points=[])
+    store = QdrantStore(client, "docs", hnsw_ef=256)
+    await store.search(vector=[0.1], top_k=5)
+    kwargs = client.query_points.call_args.kwargs
+    assert isinstance(kwargs["search_params"], models.SearchParams)
+    assert kwargs["search_params"].hnsw_ef == 256
+
+
+async def test_search_without_hnsw_ef_has_no_search_params():
+    store, client = make_store()
+    client.query_points.return_value = SimpleNamespace(points=[])
+    await store.search(vector=[0.1], top_k=5)
+    assert "search_params" not in client.query_points.call_args.kwargs

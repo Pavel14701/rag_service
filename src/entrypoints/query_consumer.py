@@ -3,12 +3,15 @@
 import uuid
 from typing import Any
 
+import structlog
 from dishka import AsyncContainer
 
 from entrypoints.base_consumer import BaseConsumer
 from application.services.retriever import RetrieverService
 from application.interfaces import TokenValidator
 from domain.exceptions import PermissionDeniedError
+
+logger = structlog.get_logger(__name__)
 
 
 class QueryConsumer(BaseConsumer):
@@ -38,4 +41,4 @@ class QueryConsumer(BaseConsumer):
 
         # In a real implementation, send result back via reply_queue
         # For now, just log or store.
-        print(f"Result for {query_id}: {result}")
+        logger.info(f"Result for {query_id}: {result}")

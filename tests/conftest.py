@@ -5,6 +5,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from functools import cache
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -35,6 +36,30 @@ requires_unstructured = pytest.mark.skipif(
     not unstructured_available(),
     reason="unstructured/python-magic (libmagic) is not importable on this platform",
 )
+
+
+class FakeMessage:
+    """Minimal IncomingMessage double."""
+
+    def __init__(self, body: bytes, headers: dict | None = None):
+        self.body = body
+        self.headers = headers or {}
+        self.published: list[tuple[str, bytes, dict]] = []
+        self.channel = SimpleNamespace(
+            default_exchange=SimpleNamespace(publish=self._publish)
+        )
+
+    async def _publish(self, message, routing_key):
+        self.published.append((routing_key, message.body, dict(message.headers)))
+
+    def process(self, **kwargs):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
 
 
 def make_document(
@@ -144,14 +169,25 @@ class FakeVectorStore:
     async def upsert(self, ids, vectors, payloads) -> None:
         self.upserts.append({"ids": ids, "vectors": vectors, "payloads": payloads})
 
-    async def search(self, vector, top_k, filter_condition=None):
+    async def search(self, vector, top_k, filter_condition=None, keyword_query=None):
         self.searches.append(
-            {"vector": vector, "top_k": top_k, "filter_condition": filter_condition}
+            {
+                "vector": vector,
+                "top_k": top_k,
+                "filter_condition": filter_condition,
+                "keyword_query": keyword_query,
+            }
         )
         return self.search_results[:top_k]
 
     async def delete_by_filter(self, filter_condition) -> None:
         self.deleted_filters.append(filter_condition)
+
+    async def scroll_first_payload(self):
+        """Model-version marker: payload of the first indexed point."""
+        if self.upserts and self.upserts[0]["payloads"]:
+            return dict(self.upserts[0]["payloads"][0])
+        return None
 
 
 class FakeEmbedding:
@@ -160,10 +196,20 @@ class FakeEmbedding:
     def __init__(self, dim: int = 4) -> None:
         self.dim = dim
         self.calls: list[list[str]] = []
+        self.query_calls: list[list[str]] = []
+        self.passage_calls: list[list[str]] = []
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls.append(list(texts))
         return [[float(len(t) % 10)] * self.dim for t in texts]
+
+    async def embed_query(self, texts: list[str]) -> list[list[float]]:
+        self.query_calls.append(list(texts))
+        return await self.embed(texts)
+
+    async def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        self.passage_calls.append(list(texts))
+        return await self.embed(texts)
 
     def dimension(self) -> int:
         return self.dim

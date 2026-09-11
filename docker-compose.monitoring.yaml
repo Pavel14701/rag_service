@@ -1,0 +1,29 @@
+# Monitoring stack: Prometheus + Grafana + Jaeger.
+# Start together with the main compose file so service names resolve:
+#   docker compose -f docker-compose.yaml -f docker-compose.monitoring.yaml up
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"   # UI
+      - "4318:4318"     # OTLP/HTTP (set OTEL_ENDPOINT=http://jaeger:4318/v1/traces on the worker)
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"

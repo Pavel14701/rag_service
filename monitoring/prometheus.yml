@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: rag_service
+    # "worker" resolves when the monitoring stack is started together
+    # with the main compose file:
+    #   docker compose -f docker-compose.yaml -f docker-compose.monitoring.yaml up
+    # When running standalone, replace with host.docker.internal:8000.
+    static_configs:
+      - targets:
+          - "worker-query:8000"
+          - "worker-background:8000"

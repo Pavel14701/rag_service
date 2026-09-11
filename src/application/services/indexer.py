@@ -25,11 +25,15 @@ class IndexerService:
         vector_store: VectorStore,
         repo: DocumentRepository,
         embedding: EmbeddingModel,
+        embedding_version: str | None = None,
     ) -> None:
         self._file_storage = file_storage
         self._vector_store = vector_store
         self._repo = repo
         self._embedding = embedding
+        # Version marker stamped into every point payload so that a
+        # model change can be detected (migration reindexing).
+        self._embedding_version = embedding_version
 
     async def index_document(self, doc_id: uuid.UUID) -> None:
         """
@@ -62,7 +66,8 @@ class IndexerService:
                     raise IndexingError("No chunks extracted from document")
 
                 texts = [c["text"] for c in chunks]
-                embeddings = await self._embedding.embed(texts)
+                # E5 models require the "passage: " prefix for documents
+                embeddings = await self._embedding.embed_passages(texts)
 
                 await self._vector_store.upsert(
                     ids=[c["chunk_id"] for c in chunks],
@@ -96,17 +101,29 @@ class IndexerService:
                 chunk_id = str(
                     uuid.uuid5(uuid.NAMESPACE_URL, f"{doc_id}:{idx}:{chunk_idx}")
                 )
+                metadata = {
+                    "text": chunk_text,
+                    "doc_id": str(doc_id),
+                    "owner_id": doc.owner_id,
+                    "access_group": doc.access_group or "",
+                    "page": el.get("metadata", {}).get("page", 0),
+                    "header": el.get("metadata", {}).get("header", ""),
+                    # Multimodal hint: element category from the parser
+                    # ("table", "image", "title", "text", ...).
+                    "type": el.get("metadata", {}).get("type", "text"),
+                }
+                table_html = el.get("metadata", {}).get("table_html")
+                if table_html:
+                    # Preserve the HTML form of a table for faithful
+                    # rendering/LLM context (attached per chunk of the
+                    # table element).
+                    metadata["table_html"] = table_html
+                if self._embedding_version:
+                    metadata["embedding_model"] = self._embedding_version
                 chunks.append({
                     "chunk_id": chunk_id,
                     "text": chunk_text,
-                    "metadata": {
-                        "text": chunk_text,
-                        "doc_id": str(doc_id),
-                        "owner_id": doc.owner_id,
-                        "access_group": doc.access_group or "",
-                        "page": el.get("metadata", {}).get("page", 0),
-                        "header": el.get("metadata", {}).get("header", ""),
-                    },
+                    "metadata": metadata,
                 })
         return chunks
 

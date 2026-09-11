@@ -4,12 +4,14 @@ import logging
 import uuid
 from typing import Optional
 
+import structlog
+
 from domain.exceptions import DocumentNotFoundError, PermissionDeniedError
 from application.interfaces import FileStorage, VectorStore, DocumentRepository
 from application.services.indexer import IndexerService
 from application.interfaces import EmbeddingModel
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class DocumentManager:
@@ -22,12 +24,15 @@ class DocumentManager:
         repo: DocumentRepository,
         indexer: IndexerService,
         embedding_model: EmbeddingModel,
+        embedding_model_name: str | None = None,
     ) -> None:
         self._file_storage = file_storage
         self._vector_store = vector_store
         self._repo = repo
         self._indexer = indexer
         self._embedding_model = embedding_model
+        # Current embedding model version (config marker).
+        self._embedding_model_name = embedding_model_name
 
     async def delete_document(
         self,
@@ -82,6 +87,16 @@ class DocumentManager:
         if not is_admin:
             raise PermissionDeniedError("User is not an administrator")
 
+        stored_version, expected_version = await self.check_embedding_version()
+        if stored_version and stored_version != expected_version:
+            logger.warning(
+                "embedding_model_migration_reindex",
+                stored=stored_version,
+                expected=expected_version,
+            )
+        elif stored_version:
+            logger.info("reindex_same_model_refresh", model=stored_version)
+
         if vector_dimension is None:
             vector_dimension = self._embedding_model.dimension()
 
@@ -94,6 +109,25 @@ class DocumentManager:
                 await self._indexer.index_document(doc.id)
             except Exception as e:
                 logger.error(f"Failed to re-index document {doc.id}: {e}")
+
+    async def check_embedding_version(self) -> tuple[str | None, str | None]:
+        """Compare the indexed model version marker with the configured one.
+
+        Returns:
+            (stored_version, expected_version): ``stored_version`` is the
+            marker read from an indexed point (None when the collection
+            is empty or unreadable); ``expected_version`` is the model
+            currently configured. When both are non-None and differ, a
+            migration reindex is required.
+        """
+        payload = await self._vector_store.scroll_first_payload()
+        stored = payload.get("embedding_model") if payload else None
+        return stored, self._embedding_model_name
+
+    async def needs_reindex(self) -> bool:
+        """True when indexed vectors were built by a different model."""
+        stored, expected = await self.check_embedding_version()
+        return stored is not None and expected is not None and stored != expected
 
     async def _is_admin(self, user_id: str) -> bool:
         """Check if user is admin (placeholder)."""

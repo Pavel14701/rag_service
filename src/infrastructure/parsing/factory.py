@@ -17,7 +17,21 @@ _LAZY_PARSERS = {
 
 
 class ParserFactory:
-    """Factory for creating document parsers."""
+    """Factory for creating document parsers.
+
+    OCR behavior for scanned PDFs is configured process-wide via
+    ``configure`` (called from the DI container at startup with the
+    ``PDF_OCR_STRATEGY`` / ``PDF_OCR_LANGUAGES`` settings).
+    """
+
+    pdf_ocr_strategy: str = "auto"
+    pdf_ocr_languages: str = "eng"
+
+    @classmethod
+    def configure(cls, strategy: str, languages: str) -> None:
+        """Set the process-wide PDF OCR strategy and languages."""
+        cls.pdf_ocr_strategy = strategy
+        cls.pdf_ocr_languages = languages
 
     @staticmethod
     def get_parser(file_path: Path) -> DocumentParser:
@@ -33,6 +47,14 @@ class ParserFactory:
         ext = file_path.suffix.lower()
         if ext == ".md":
             return MarkdownParser()
+        if ext == ".pdf":
+            pdf_parser_cls = getattr(
+                import_module("infrastructure.parsing.pdf_parser"), "PDFParser"
+            )
+            return pdf_parser_cls(
+                strategy=ParserFactory.pdf_ocr_strategy,
+                languages=ParserFactory.pdf_ocr_languages,
+            )
         module_name, class_name = _LAZY_PARSERS.get(
             ext, ("infrastructure.parsing.unstructured_parser", "UnstructuredParser")
         )
