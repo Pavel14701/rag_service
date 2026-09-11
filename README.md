@@ -117,6 +117,13 @@ uv run alembic revision --autogenerate -m "describe change"
 uv run alembic upgrade head          # проверьте сгенерированный DDL перед применением
 ```
 
+Управление ACL-группами (таблица `user_groups`; используется фильтром доступа, если в JWT нет claim `groups`):
+
+```bash
+uv run python scripts/manage_groups.py set user-1 team-a,team-b
+uv run python scripts/manage_groups.py list user-1
+```
+
 Тесты (`tests/test_migrations.py`) прогоняют миграцию в offline-режиме и сверяют DDL с ORM-метаданными — расхождение схемы и миграций ломает тесты.
 
 ## Роли воркеров
