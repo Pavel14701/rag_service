@@ -14,6 +14,8 @@ import time
 from collections import OrderedDict
 from typing import Any
 
+from application.interfaces import CachedAnswer, CacheMeta
+
 
 class TTLCache:
     """LRU cache with a shared time-to-live for all entries."""
@@ -159,11 +161,12 @@ Cache = TTLCache | RedisCache
 class InMemorySemanticCache:
     """Cosine-similarity answer cache (single process).
 
-    Stores ``(vector, answer)`` pairs; ``lookup`` returns the best
-    answer whose cosine similarity with the query vector is at least
-    ``threshold``. Deliberately in-process: a distributed variant
-    would need a vector index in Redis. Use ``enabled=False`` (no-op)
-    in multi-tenant setups where cached answers leak ACL context.
+    Stores ``(vector, answer, meta)`` entries; ``lookup`` returns the
+    best entry whose cosine similarity with the query vector is at
+    least ``threshold``. The caller re-validates the provenance meta
+    (chunk visibility, model versions) - the cache itself stays
+    ACL-agnostic. Deliberately in-process: a distributed variant
+    would need a vector index in Redis/Qdrant.
     """
 
     def __init__(
@@ -179,10 +182,11 @@ class InMemorySemanticCache:
         self._threshold = threshold
         self._enabled = enabled
         self._clock = clock if clock is not None else time.monotonic
-        # key -> (expires_at, vector, answer); OrderedDict = LRU order
-        self._entries: OrderedDict[str, tuple[float, list[float], str]] = (
-            OrderedDict()
-        )
+        # key -> (expires_at, vector, answer, meta); OrderedDict = LRU
+        self._entries: OrderedDict[
+            str,
+            tuple[float, list[float], str, CacheMeta],
+        ] = OrderedDict()
 
     @staticmethod
     def _cosine(a: list[float], b: list[float]) -> float:
@@ -193,35 +197,52 @@ class InMemorySemanticCache:
             return 0.0
         return dot / (norm_a * norm_b)
 
-    async def lookup(self, vector: list[float]) -> str | None:
-        """Best cached answer within the similarity threshold."""
+    async def lookup(self, vector: list[float]) -> CachedAnswer | None:
+        """Best cached entry within the similarity threshold."""
         if not self._enabled or not self._entries:
             return None
         now = self._clock()
         best_key: str | None = None
         best_score = 0.0
-        best_answer: str | None = None
+        best_hit: CachedAnswer | None = None
         expired: list[str] = []
-        for key, (expires_at, entry_vector, answer) in self._entries.items():
+        for key, (
+            expires_at,
+            entry_vector,
+            answer,
+            meta,
+        ) in self._entries.items():
             if expires_at <= now:
                 expired.append(key)
                 continue
             score = self._cosine(vector, entry_vector)
             if score > best_score:
-                best_key, best_score, best_answer = key, score, answer
+                best_key = key
+                best_score = score
+                best_hit = CachedAnswer(answer=answer, meta=meta)
         for key in expired:
             del self._entries[key]
         if best_key is None or best_score < self._threshold:
             return None
         self._entries.move_to_end(best_key)
-        return best_answer
+        return best_hit
 
-    async def store(self, vector: list[float], answer: str) -> None:
+    async def store(
+        self,
+        vector: list[float],
+        answer: str,
+        meta: CacheMeta,
+    ) -> None:
         """Remember the answer, evicting the oldest beyond ``maxsize``."""
         if not self._enabled:
             return
         key = hashlib.sha256(str(vector).encode()).hexdigest()
-        self._entries[key] = (self._clock() + self._ttl, vector, answer)
+        self._entries[key] = (
+            self._clock() + self._ttl,
+            vector,
+            answer,
+            meta,
+        )
         self._entries.move_to_end(key)
         while len(self._entries) > self._maxsize:
             self._entries.popitem(last=False)

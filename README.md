@@ -42,8 +42,10 @@ in a single composition root.
   with server-side allowlists
 - Optional **query rewriting** through the LLM (graceful fallback to the
   original query)
-- Optional **semantic answer cache**: near-duplicate questions reuse a previous
-  answer without an LLM call (opt-in, see the ACL caveat in the settings)
+- Optional **semantic answer cache** with cache-then-validate: near-duplicate
+  questions reuse a previous answer only after its source chunks are
+  re-validated against the requester ACL (opt-in; strict group-set mode
+  available)
 - Truncated answers (`finish_reason=length` / `stop_reason=max_tokens`) are
   **never cached**; optional continuation requests merge the full answer
 - **Agentic retrieval** (opt-in): an LLM grader validates the hits and
@@ -292,8 +294,10 @@ uv run python scripts/purge_deleted_documents.py --days 30 --apply
 ## Known Limitations
 
 - Real OCR (`ocr_only` / `hi_res`) requires `tesseract` + `poppler` in the
-  worker image. `PARSE_TIMEOUT` cancels the *await*; the executor thread itself
-  needs a process-level cap in hardened deployments.
+  worker image. With `PARSE_ISOLATION_ENABLED=true` OCR runs in a dedicated
+  subprocess whose whole process tree is killed on `PARSE_TIMEOUT`; parsing
+  also shares a bounded dedicated thread pool so hung parsers never affect
+  query workers.
 - The semantic answer cache is in-process and opt-in: in multi-tenant setups a
   cached answer was generated under a specific user's ACL — enable only when
   that is acceptable.

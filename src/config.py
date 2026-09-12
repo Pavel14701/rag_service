@@ -138,6 +138,10 @@ class Settings(BaseSettings):
     # Hard parsing time budget in seconds (0 = unlimited). Guards
     # against OCR/tesseract hangs on binary garbage renamed to .pdf.
     parse_timeout: float = 300.0
+    # Isolated OCR parsing (opt-in): text-layer gate + killable
+    # subprocess for OCR-capable parsers (hung tesseract protection).
+    parse_isolation_enabled: bool = False
+    parse_max_workers: int = 2
     # Verify real MIME type (magic bytes) against the file extension
     # before parsing; mismatch = permanent failure (no retry).
     parse_validate_mime: bool = True
@@ -178,6 +182,9 @@ class Settings(BaseSettings):
     agentic_planner_enabled: bool = False
     agentic_max_rounds: int = 0
     agentic_subquery_limit: int = 3
+    # Cache-then-validate strict mode: a cache hit additionally requires
+    # an exact ACL group-set match (not just chunk-level visibility).
+    semantic_cache_strict_acl: bool = False
 
     # GraphRAG: pseudo-graph in Qdrant (entities collection); the Neo4j
     # backend requires the optional `graph-neo4j` extra.

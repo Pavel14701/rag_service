@@ -227,6 +227,18 @@ class VectorStore(Protocol):
         """
         ...
 
+    async def retrieve_by_ids(
+        self,
+        ids: list[str],
+        filter_condition: dict[str, Any] | None = None,
+    ) -> list[str]:
+        """Return the subset of ``ids`` visible under ``filter_condition``.
+
+        ACL gateway for cache-then-validate: hidden points are
+        silently excluded from the result.
+        """
+        ...
+
     async def scroll_first_payload(self) -> dict[str, Any] | None:
         """Return the payload of an arbitrary stored point, or None.
 
@@ -322,20 +334,53 @@ class QueryRewriter(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class CacheMeta:
+    """Provenance of a cached answer (multi-tenant ACL safety).
+
+    ``chunk_ids`` are the ACTUAL chunk ids (never parent ids) the
+    answer was built from - they are re-validated against the
+    requester ACL on every cache hit. ``acl_key`` is an optional
+    fingerprint of the sorted access groups for strict-ACL mode.
+    """
+
+    chunk_ids: tuple[str, ...]
+    embedding_model: str
+    llm_provider: str
+    llm_model: str
+    temperature: float
+    acl_key: str = ''
+
+
+@dataclass(frozen=True)
+class CachedAnswer:
+    """A cached answer together with its provenance metadata."""
+
+    answer: str
+    meta: CacheMeta
+
+
 @runtime_checkable
 class SemanticCache(Protocol):
     """Near-duplicate answer cache keyed by query embedding.
 
     Lookup returns a previously generated answer for a question
-    whose embedding is semantically close to the current one.
+    whose embedding is semantically close to the current one, together
+    with provenance metadata the caller validates against the current
+    request (model versions, routing, ACL) before trusting it.
     """
 
-    async def lookup(self, vector: list[float]) -> str | None:
-        """Best cached answer within the similarity threshold."""
+    async def lookup(self, vector: list[float]) -> CachedAnswer | None:
+        """Best cached entry within the similarity threshold."""
         ...
 
-    async def store(self, vector: list[float], answer: str) -> None:
-        """Remember the answer for this query embedding."""
+    async def store(
+        self,
+        vector: list[float],
+        answer: str,
+        meta: CacheMeta,
+    ) -> None:
+        """Remember the answer with its provenance metadata."""
         ...
 
 
@@ -414,6 +459,25 @@ class EntityExtractor(Protocol):
 
     async def extract(self, text: str) -> list[ExtractedRelation]:
         """Extract triples; empty list when nothing is found."""
+        ...
+
+
+@runtime_checkable
+class IsolatedParseRunner(Protocol):
+    """Runs a sync parser in a killable child process.
+
+    Used for OCR-capable parsers: a hung tesseract must never keep a
+    worker thread busy forever. The runner kills the whole process
+    tree on timeout and raises ``ParseTimeoutError``.
+    """
+
+    async def run(
+        self,
+        parser: DocumentParser,
+        file_path: Path,
+        timeout: float,
+    ) -> list[dict[str, Any]]:
+        """Parse the file; raise ParseTimeoutError past ``timeout``."""
         ...
 
 

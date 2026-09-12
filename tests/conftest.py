@@ -232,6 +232,7 @@ class FakeVectorStore:
 
     def __init__(self) -> None:
         self.upserts: list[dict[str, Any]] = []
+        self.payload_by_id: dict[str, dict[str, Any]] = {}
         self.searches: list[dict[str, Any]] = []
         self.deleted_filters: list[dict[str, Any]] = []
         self.created_dimensions: list[int] = []
@@ -257,6 +258,8 @@ class FakeVectorStore:
         payloads: list[dict[str, Any]],
     ) -> None:
         self.upserts.append({"ids": ids, "vectors": vectors, "payloads": payloads})
+        for pid, payload in zip(ids, payloads):
+            self.payload_by_id[pid] = payload
 
     async def search(
         self,
@@ -274,6 +277,39 @@ class FakeVectorStore:
             }
         )
         return list(self.search_results)
+
+    async def retrieve_by_ids(
+        self,
+        ids: list[str],
+        filter_condition: dict[str, Any] | None = None,
+    ) -> list[str]:
+        """Return ids visible under the filter (ACL gateway)."""
+        if filter_condition is None:
+            return [i for i in ids if i in self.payload_by_id]
+        return [
+            i
+            for i in ids
+            if i in self.payload_by_id
+            and self._matches_filter(self.payload_by_id[i], filter_condition)
+        ]
+
+    @staticmethod
+    def _matches_filter(payload: dict[str, Any], cond: dict[str, Any]) -> bool:
+        """Evaluate the generic filter dict shapes used by the ACL."""
+        if "key" in cond:
+            expected = cond.get("match", {}).get("value")
+            actual = payload.get(cond["key"])
+            if isinstance(expected, list):
+                return actual in expected
+            return actual == expected
+        results: list[bool] = []
+        for clause, mode in (("must", "all"), ("should", "any")):
+            subs = cond.get(clause)
+            if not subs:
+                continue
+            checks = [FakeVectorStore._matches_filter(payload, s) for s in subs]
+            results.append(all(checks) if mode == "all" else any(checks))
+        return all(results) if results else True
 
     async def delete_by_filter(self, filter_condition) -> None:
         self.deleted_filters.append(filter_condition)

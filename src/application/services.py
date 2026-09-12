@@ -6,7 +6,9 @@ adapters. Services depend only on the ports declared in
 """
 
 import asyncio
+import hashlib
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import uuid
 from pathlib import Path
@@ -16,6 +18,8 @@ import structlog
 from bs4 import BeautifulSoup
 
 from application.interfaces import (
+    CachedAnswer,
+    CacheMeta,
     DistributedLock,
     DocumentGrader,
     DocumentParser,
@@ -24,6 +28,7 @@ from application.interfaces import (
     EntityExtractor,
     FileStorage,
     GraphStore,
+    IsolatedParseRunner,
     LLMGenerator,
     ParserSelector,
     QueryPlanner,
@@ -35,6 +40,7 @@ from domain.model import (
     DocStatus,
     DocumentNotFoundError,
     IndexingError,
+    ParseTimeoutError,
     IndexLockedError,
     PermanentIndexingError,
     PermissionDeniedError,
@@ -61,6 +67,8 @@ class IndexerService:
         child_chars: int = 0,
         entity_extractor: EntityExtractor | None = None,
         graph_store: GraphStore | None = None,
+        parse_max_workers: int = 2,
+        parse_runner: IsolatedParseRunner | None = None,
     ) -> None:
         self._file_storage = file_storage
         self._vector_store = vector_store
@@ -87,6 +95,14 @@ class IndexerService:
         # after a successful upsert; indexing never fails because of it.
         self._entity_extractor = entity_extractor
         self._graph_store = graph_store
+        # Dedicated parse pool: hung parsers (OCR) poison only this
+        # bounded pool, never the default executor shared by the loop.
+        self._parse_executor = ThreadPoolExecutor(
+            max_workers=max(1, parse_max_workers),
+            thread_name_prefix='rag-parse',
+        )
+        # Optional isolated runner for OCR-capable parsers (opt-in).
+        self._parse_runner = parse_runner
 
     async def index_document(self, doc_id: uuid.UUID) -> None:
         """Index a document by its ID.
@@ -127,7 +143,12 @@ class IndexerService:
                 )
 
                 try:
-                    parser = self._parser_selector.get_parser(local_path)
+                    loop = asyncio.get_running_loop()
+                    parser = await loop.run_in_executor(
+                        self._parse_executor,
+                        self._parser_selector.get_parser,
+                        local_path,
+                    )
                 except Exception as e:
                     # Includes MIME mismatch (magic bytes vs extension):
                     # invalid input, retrying cannot succeed.
@@ -202,20 +223,43 @@ class IndexerService:
     async def _parse(
         self, parser: DocumentParser, path: Path
     ) -> list[dict[str, Any]]:
-        """Run the sync parser off the event loop with an optional cap."""
+        """Run the sync parser off the event loop with an optional cap.
+
+        OCR-capable parsers (``requires_isolation``) go through the
+        isolated parse runner when wired: a hung tesseract is killed
+        with its whole process tree instead of poisoning the pool.
+        """
+        if self._parse_runner is not None and getattr(
+            parser, 'requires_isolation', False
+        ):
+            return await self._parse_isolated(parser, path)
         loop = asyncio.get_running_loop()
-        coro = loop.run_in_executor(None, parser.parse, path)
+        coro = loop.run_in_executor(self._parse_executor, parser.parse, path)
         if self._parse_timeout <= 0:
             return await coro
         try:
             return await asyncio.wait_for(coro, timeout=self._parse_timeout)
         except asyncio.TimeoutError as e:
-            # A hung tesseract never comes back: treat as permanent.
-            # Note: the executor thread keeps running; run background
-            # workers with process-level OCR limits too.
+            # A hung in-process parser never comes back: treat as
+            # permanent (the thread keeps burning in the bounded pool).
             raise PermanentIndexingError(
                 f'Parsing timed out after {self._parse_timeout}s'
             ) from e
+
+    async def _parse_isolated(
+        self,
+        parser: DocumentParser,
+        path: Path,
+    ) -> list[dict[str, Any]]:
+        """Parse in a killable child process (OCR isolation path)."""
+        assert self._parse_runner is not None  # noqa: S101 - guarded above
+        try:
+            return await self._parse_runner.run(
+                parser, path, self._parse_timeout
+            )
+        except ParseTimeoutError as e:
+            # A hung OCR is permanent for this file (no retry helps).
+            raise PermanentIndexingError(str(e)) from e
 
     def _prepare_chunks(
         self,
@@ -461,6 +505,8 @@ class RetrieverService:
         score_threshold: float = 0.0,
         context_max_chars: int = 0,
         semantic_cache: SemanticCache | None = None,
+        embedding_model: str = '',
+        cache_strict_acl: bool = False,
         query_rewriter: QueryRewriter | None = None,
         document_grader: DocumentGrader | None = None,
         query_planner: QueryPlanner | None = None,
@@ -484,9 +530,14 @@ class RetrieverService:
         self._score_threshold = score_threshold
         # Character budget for the packed context (0 = unlimited).
         self._context_max_chars = context_max_chars
-        # Near-duplicate answer cache (None = disabled). See the
-        # multi-tenant ACL caveat in the settings docs.
+        # Near-duplicate answer cache (None = disabled). Every hit is
+        # re-validated against the provenance meta before use.
         self._semantic_cache = semantic_cache
+        # Embedding model version stamped into cache meta: vectors from
+        # a different model must never be trusted.
+        self._embedding_model = embedding_model
+        # Strict mode: additionally require an exact ACL group-set match.
+        self._cache_strict_acl = cache_strict_acl
         # Opt-in query rewriter (auxiliary LLM call before search).
         self._query_rewriter = query_rewriter
         # Agentic retrieval (Corrective RAG): optional hit grader + query
@@ -651,12 +702,12 @@ class RetrieverService:
                 }
             )
 
-        # Semantic answer cache: the query embedding is already here,
-        # and sources come from this user's own (ACL-filtered) search -
-        # only the LLM call is saved.
-        cached_answer: str | None = None
-        if self._semantic_cache is not None:
-            cached_answer = await self._semantic_cache.lookup(query_vec)
+        # Semantic answer cache with cache-then-validate: a hit is
+        # trusted only if the provenance meta matches this request AND
+        # every source chunk is visible under the requester ACL filter.
+        cached_answer: str | None = await self._validated_cache_hit(
+            query_vec, groups, llm_provider, llm_model, filter_cond
+        )
 
         if cached_answer is not None:
             logger.info('semantic_cache_hit', user_id=user_id)
@@ -681,8 +732,27 @@ class RetrieverService:
                 llm_provider,
                 llm_model,
             )
-            if self._semantic_cache is not None:
-                await self._semantic_cache.store(query_vec, answer)
+            if self._semantic_cache is not None and query_vec is not None:
+                meta = CacheMeta(
+                    chunk_ids=tuple(
+                        dict.fromkeys(
+                            str(h['id'])
+                            for h in hits
+                            if h.get('id') is not None
+                        )
+                    ),
+                    embedding_model=self._embedding_model,
+                    llm_provider=llm_provider or '',
+                    llm_model=llm_model or '',
+                    temperature=temperature,
+                    acl_key=self._acl_key_for(groups)
+                    if self._cache_strict_acl
+                    else '',
+                )
+                try:
+                    await self._semantic_cache.store(query_vec, answer, meta)
+                except Exception:  # noqa: BLE001 - cache must not break answering
+                    logger.warning('semantic_cache_store_failed')
 
         # Persist the conversation with PII redacted when configured:
         # the raw user question and the generated answer may contain
@@ -702,6 +772,66 @@ class RetrieverService:
             'sources': sources,
             'conversation_id': conversation_id,
         }
+
+    # -- semantic cache validation ------------------------------------------
+
+    @staticmethod
+    def _acl_key_for(groups: list[str]) -> str:
+        """Fingerprint of the sorted access-group set (strict-ACL mode).
+
+        Set equality cannot be expressed as a plain match filter, so
+        the sorted group list is hashed instead.
+        """
+        if not groups:
+            return ''
+        joined = ','.join(sorted(groups))
+        return hashlib.sha256(joined.encode()).hexdigest()
+
+    async def _validated_cache_hit(
+        self,
+        query_vec: list[float] | None,
+        groups: list[str],
+        llm_provider: str | None,
+        llm_model: str | None,
+        filter_cond: dict[str, Any],
+    ) -> str | None:
+        """Cache-then-validate lookup; returns None on any doubt.
+
+        Trust requires: same embedding model, same LLM routing
+        (provider/model), same ACL group set in strict mode, and full
+        visibility of the source chunks under the requester ACL filter.
+        """
+        if self._semantic_cache is None or query_vec is None:
+            return None
+        try:
+            cached: CachedAnswer | None = await self._semantic_cache.lookup(
+                query_vec
+            )
+        except Exception:  # noqa: BLE001 - cache must not break answering
+            return None
+        if cached is None:
+            return None
+        meta = cached.meta
+        if meta.embedding_model != self._embedding_model:
+            return None
+        if meta.llm_provider != (llm_provider or '') or meta.llm_model != (
+            llm_model or ''
+        ):
+            return None
+        if self._cache_strict_acl and meta.acl_key != self._acl_key_for(
+            groups
+        ):
+            return None
+        try:
+            visible = await self._vector_store.retrieve_by_ids(
+                list(meta.chunk_ids),
+                filter_cond,
+            )
+        except Exception:  # noqa: BLE001 - validation must not break answering
+            return None
+        if set(visible) >= set(meta.chunk_ids):
+            return cached.answer
+        return None
 
     # -- agentic retrieval helpers ------------------------------------------
 

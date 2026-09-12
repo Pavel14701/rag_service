@@ -7,6 +7,10 @@ without libmagic installed). Lightweight dependencies (``markdown``,
 ``beautifulsoup4``) are imported at module level.
 """
 
+import asyncio
+import json
+import os
+import signal
 import subprocess
 import sys
 from functools import cache
@@ -17,10 +21,14 @@ import markdown
 from bs4 import BeautifulSoup
 
 from application.interfaces import DocumentParser
+from domain.model import ParseTimeoutError
+from infrastructure.observability import PARSE_TIMEOUTS_TOTAL
 
 
 class MarkdownParser(DocumentParser):
     """Parser for .md files that splits by headers."""
+
+    requires_isolation = False
 
     def parse(self, file_path: Path) -> list[dict[str, Any]]:
         """Parse markdown, splitting on headers (h1-h3).
@@ -79,9 +87,20 @@ class PDFParser(DocumentParser):
     (e.g. ``eng`` or ``eng,rus``) used when OCR runs.
     """
 
-    def __init__(self, strategy: str = 'auto', languages: str = 'eng') -> None:
+    def __init__(
+        self,
+        strategy: str = 'auto',
+        languages: str = 'eng',
+        requires_isolation: bool = True,
+    ) -> None:
         self._strategy = strategy
         self._languages = languages
+        # Public on purpose: read by the isolated parse runner.
+        self.strategy = strategy
+        self.languages = languages
+        # Fast text-layer parses stay in-process; OCR-capable strategies
+        # must run in a killable child process (hung tesseract).
+        self.requires_isolation = requires_isolation
 
     def parse(self, file_path: Path) -> list[dict[str, Any]]:
         """Parse a PDF file and return a list of text elements with metadata.
@@ -135,6 +154,8 @@ class PDFParser(DocumentParser):
 class DocxParser(DocumentParser):
     """Parser for DOCX documents that extracts text and metadata."""
 
+    requires_isolation = False
+
     def parse(self, file_path: Path) -> list[dict[str, Any]]:
         """Parse a DOCX file and return a list of text elements with metadata.
 
@@ -175,6 +196,9 @@ class UnstructuredParser(DocumentParser):
 
     Works for many formats: .txt, .html, .epub, etc.
     """
+
+    # auto-partition can OCR arbitrary formats: run it isolated
+    requires_isolation = True
 
     def parse(self, file_path: Path) -> list[dict[str, Any]]:
         """Parse any supported file format and return text elements.
@@ -278,9 +302,12 @@ class DocumentParserSelector:
         self,
         pdf_ocr_strategy: str = 'auto',
         pdf_ocr_languages: str = 'eng',
+        parse_isolation_enabled: bool = False,
     ) -> None:
         self._pdf_ocr_strategy = pdf_ocr_strategy
         self._pdf_ocr_languages = pdf_ocr_languages
+        # Text-layer gate + isolated OCR parsing (opt-in).
+        self._parse_isolation_enabled = parse_isolation_enabled
 
     def _validate_mime(self, file_path: Path) -> None:
         """Reject files whose magic bytes contradict the extension."""
@@ -317,8 +344,158 @@ class DocumentParserSelector:
         if ext == '.md':
             return MarkdownParser()
         if ext == '.pdf':
+            strategy = self._pdf_ocr_strategy
+            requires_isolation = True
+            has_text_layer = False
+            if self._parse_isolation_enabled and strategy == 'auto':
+                try:
+                    has_text_layer = _pdf_has_text_layer(file_path)
+                except Exception:  # noqa: BLE001 - gate must never raise
+                    has_text_layer = False  # fail safe to the OCR path
+            if (
+                self._parse_isolation_enabled
+                and strategy == 'auto'
+                and has_text_layer
+            ):
+                # Text layer present: skip OCR entirely, keep the fast
+                # pure-text parse in-process. Any probe failure above
+                # fails safe to the isolated OCR-capable path.
+                strategy = 'fast'
+                requires_isolation = False
             return PDFParser(
-                strategy=self._pdf_ocr_strategy,
+                strategy=strategy,
                 languages=self._pdf_ocr_languages,
+                requires_isolation=requires_isolation,
             )
         return DocxParser() if ext == '.docx' else UnstructuredParser()
+
+
+def _pdf_has_text_layer(
+    file_path: Path,
+    min_chars: int = 32,
+    max_pages: int = 3,
+) -> bool:
+    """Cheap probe: do the first pages already carry a text layer?
+
+    Best-effort by design: any import/parse failure returns False,
+    which fails safe to the isolated OCR-capable parsing path.
+    """
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return False
+    try:
+        reader = PdfReader(str(file_path))
+        for page in reader.pages[:max_pages]:
+            text = (page.extract_text() or '').strip()
+            if len(text) >= min_chars:
+                return True
+    except Exception:  # noqa: BLE001 - probe must never break selection
+        return False
+    return False
+
+
+async def _run_subprocess_json(
+    args: list[str],
+    timeout: float,
+    cwd: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Run a child process that writes a JSON element list; kill on timeout.
+
+    Kills the whole process tree (tesseract children included): on
+    POSIX via a new process group + SIGKILL, on Windows via
+    taskkill /F /T. Raises ParseTimeoutError past ``timeout`` and
+    RuntimeError when the child exits non-zero.
+    """
+    kwargs: dict[str, Any] = {}
+    if os.name != 'nt':
+        kwargs['start_new_session'] = True
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(cwd) if cwd else None,
+        **kwargs,
+    )
+    try:
+        _stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        _kill_process_tree(proc)
+        await proc.wait()
+        PARSE_TIMEOUTS_TOTAL.labels(mode='isolated').inc()
+        raise ParseTimeoutError(
+            f'isolated parsing timed out after {timeout}s; process tree killed'
+        ) from None
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f'isolated parsing failed (exit {proc.returncode}): '
+            f'{stderr.decode(errors="replace").strip()}'
+        )
+    out_path = Path(args[-1])
+    try:
+        return list(json.loads(out_path.read_text(encoding='utf-8')))
+    finally:
+        out_path.unlink(missing_ok=True)
+
+
+def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """Terminate the child and all of its descendants, cross-platform."""
+    if os.name != 'nt':
+        # POSIX-only symbols resolved dynamically: they do not exist on
+        # Windows builds and this branch never runs there.
+        killpg = getattr(os, 'killpg', None)
+        getpgid = getattr(os, 'getpgid', None)
+        sigkill = getattr(signal, 'SIGKILL', None)
+        if killpg and getpgid and sigkill:
+            try:
+                killpg(getpgid(proc.pid), sigkill)
+            except (ProcessLookupError, PermissionError):
+                pass
+        return
+    subprocess.run(
+        ['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+        capture_output=True,
+        check=False,
+    )
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+
+
+class SubprocessParseRunner:
+    """IsolatedParseRunner on python -m infrastructure.parsing_worker.
+
+    The child imports the heavy unstructured stack in isolation, so a
+    hung OCR costs one killed process instead of a poisoned worker
+    thread pool.
+    """
+
+    async def run(
+        self,
+        parser: DocumentParser,
+        file_path: Path,
+        timeout: float,
+    ) -> list[dict[str, Any]]:
+        """Parse in a child process; kill the tree past ``timeout``."""
+        strategy = str(getattr(parser, 'strategy', 'auto'))
+        languages = str(getattr(parser, 'languages', 'eng'))
+        out_path = Path(f'{file_path}.elements.json')
+        args = [
+            '-m',
+            'infrastructure.parsing_worker',
+            str(file_path),
+            strategy,
+            languages,
+            str(out_path),
+        ]
+        return await _run_subprocess_json(args, timeout, cwd=_package_root())
+
+
+@cache
+def _package_root() -> Path:
+    """Directory put on the child path so -m resolves the worker module."""
+    return Path(__file__).resolve().parent.parent

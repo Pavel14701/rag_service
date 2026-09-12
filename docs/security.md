@@ -50,6 +50,8 @@ payment cards, IBANs and API-key-like secrets are masked with
   `QDRANT_HTTPS` / `MINIO_SECURE` (+ `QDRANT_API_KEY`).
 - Production data only on managed devices (see `it_security.md` in the eval
   corpus for the policy text used in evals).
-- The semantic answer cache is **off by default**: a cached answer was
-  generated under a specific user's ACL; enable only for uniform-access
-  tenants.
+- The semantic answer cache is **off by default**. When enabled, it uses
+  cache-then-validate: a hit is only served after every source chunk of the
+  cached answer is re-checked against the requester ACL filter
+  (`SEMANTIC_CACHE_STRICT_ACL=true` adds an exact access-group-set match for
+  answer-level sensitivity).

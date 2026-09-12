@@ -2,9 +2,20 @@
 
 import pytest
 
+from application.interfaces import CachedAnswer, CacheMeta
 from application.services import RetrieverService
 
 from conftest import FakeDocumentRepository, FakeEmbedding, FakeLLM, FakeVectorStore, make_document
+
+
+def _empty_meta() -> CacheMeta:
+    return CacheMeta(
+        chunk_ids=(),
+        embedding_model='',
+        llm_provider='',
+        llm_model='',
+        temperature=0.1,
+    )
 
 pytestmark = pytest.mark.retrieval
 
@@ -259,9 +270,9 @@ async def test_semantic_cache_hit_returns_cached_answer_without_llm(
 
     class FakeSemanticCache:
         async def lookup(self, vector: list[float]):
-            return "cached"
+            return CachedAnswer(answer="cached", meta=_empty_meta())
 
-        async def store(self, vector, answer) -> None:
+        async def store(self, vector, answer, meta) -> None:
             raise AssertionError("must not store on a hit")
 
     vector_store.search_results = [

@@ -82,6 +82,12 @@ LLM_TRUNCATIONS_TOTAL = Counter(
     ['provider'],
 )
 
+PARSE_TIMEOUTS_TOTAL = Counter(
+    'rag_parse_timeouts_total',
+    'Parses killed after exceeding the hard time budget, by mode.',
+    ['mode'],
+)
+
 
 _TRACER_NAME = 'rag_service'
 

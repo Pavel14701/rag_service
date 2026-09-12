@@ -67,9 +67,12 @@ to match the development docker-compose.
 | `SEARCH_CONTEXT_MAX_CHARS` | `12000` | LLM context character budget (0 = off) |
 | `SEMANTIC_CACHE_ENABLED` | `false` | near-duplicate answer reuse (multi-tenant ACL caveat) |
 | `SEMANTIC_CACHE_MAXSIZE` / `..._TTL` / `..._THRESHOLD` | `256` / `3600` / `0.95` | cache tuning |
+| `SEMANTIC_CACHE_STRICT_ACL` | `false` | hits additionally require an exact ACL group-set match |
 | `PARENT_CHILD_CHILD_CHARS` | `0` | children size for Parent-Child retrieval (0 = off) |
 | `CHUNK_MIN_CHARS` | `0` | merge tiny text chunks (0 = off) |
 | `PARSE_TIMEOUT` | `300.0` | hard parse/OCR budget (seconds, 0 = off) |
+| `PARSE_ISOLATION_ENABLED` | `false` | text-layer gate + killable OCR subprocess (hung tesseract protection) |
+| `PARSE_MAX_WORKERS` | `2` | dedicated parse thread pool size (zombie containment) |
 | `PARSE_VALIDATE_MIME` | `true` | magic-bytes vs extension check |
 | `PDF_OCR_STRATEGY` / `PDF_OCR_LANGUAGES` | `auto` / `eng` | unstructured OCR handling |
 

@@ -62,11 +62,15 @@ Two independent layers:
 - **Exact** (`REDIS_URL`): answers keyed by
   `(system_prompt, user_prompt, temperature)`; embeddings keyed by text.
 - **Semantic** (`SEMANTIC_CACHE_ENABLED`): cosine similarity over stored query
-  vectors; a hit saves the LLM call entirely. Sources still come from the
-  caller's own ACL-filtered search — only generation is reused.
+  vectors; a hit saves the LLM call entirely. **Cache-then-validate**: each
+  entry stores provenance (source chunk ids, embedding model, LLM provider/
+  model) and is trusted only when the meta matches the current request AND
+  every source chunk is still visible under the requester ACL filter
+  (`retrieve_by_ids` with the same filter). `SEMANTIC_CACHE_STRICT_ACL=true\
+  additionally requires an exact access-group set match (hashed `acl_key`).
 
-> Multi-tenant caveat: a cached answer was generated under a specific user's
-> ACL. Enable the semantic cache only when that is acceptable.
+> Multi-tenant note: with cache-then-validate the ACL leak is closed at
+> chunk granularity; strict mode covers answer-level group sensitivity.
 
 ## 8. Truncation handling
 
@@ -84,6 +88,7 @@ Two independent layers:
 | Table chunking | automatic | row-groups + repeated header row (pipe text + HTML) |
 | Parent-Child | `PARENT_CHILD_CHILD_CHARS` | precise matching, coherent context |
 | Parse budget | `PARSE_TIMEOUT` | hung OCR becomes a permanent per-file failure |
+| Parse isolation | `PARSE_ISOLATION_ENABLED` | OCR runs in a killable subprocess: on timeout the whole process tree is killed instead of leaking a zombie thread |
 | MIME validation | `PARSE_VALIDATE_MIME` | binary-garbage files rejected before OCR |
 
 ## Tuning recipe

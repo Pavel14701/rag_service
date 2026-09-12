@@ -79,3 +79,11 @@ class PermanentIndexingError(PermanentError, IndexingError):
 
     Example: a binary file renamed to ``.pdf`` will never parse.
     """
+
+
+class ParseTimeoutError(DomainError):
+    """A synchronous parse exceeded its hard time budget.
+
+    Raised by isolated parse runners after the child process tree
+    was killed; services map it to a permanent indexing failure.
+    """

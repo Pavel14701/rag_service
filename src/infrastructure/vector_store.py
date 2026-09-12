@@ -282,6 +282,31 @@ class QdrantStore(VectorStore):
         for target in self._write_targets():
             self._client.upsert(collection_name=target, points=points)
 
+    async def retrieve_by_ids(
+        self,
+        ids: list[str],
+        filter_condition: dict[str, Any] | None = None,
+    ) -> list[str]:
+        """Return the subset of ``ids`` visible under the ACL filter.
+
+        Qdrant retrieve skips points excluded by the read filter, so
+        the returned list contains exactly the ids the requester is
+        allowed to see (cache-then-validate ACL gateway).
+        """
+        if not ids:
+            return []
+        read_filter = (
+            self._build_filter(filter_condition) if filter_condition else None
+        )
+        points = self._client.retrieve(
+            collection_name=self._collection,
+            ids=ids,
+            with_payload=False,
+            with_vectors=False,
+            read_filter=read_filter,
+        )
+        return [str(point.id) for point in points]
+
     async def search(
         self,
         vector: list[float],

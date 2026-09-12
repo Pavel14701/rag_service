@@ -2,6 +2,7 @@
 
 import pytest
 
+from application.interfaces import CachedAnswer, CacheMeta
 from application.services import RetrieverService
 from infrastructure.caching import InMemorySemanticCache
 
@@ -10,21 +11,42 @@ from conftest import FakeEmbedding, FakeLLM
 pytestmark = pytest.mark.retrieval
 
 
+def _meta(
+    chunk_ids: tuple[str, ...] = ('c1',),
+    embedding_model: str = '',
+    llm_provider: str = '',
+    llm_model: str = '',
+    temperature: float = 0.1,
+    acl_key: str = '',
+) -> CacheMeta:
+    return CacheMeta(
+        chunk_ids=chunk_ids,
+        embedding_model=embedding_model,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        temperature=temperature,
+        acl_key=acl_key,
+    )
+
+
 async def test_store_then_exact_lookup_hits() -> None:
     cache = InMemorySemanticCache(maxsize=8, ttl=60, threshold=0.95)
     vector = [0.1, 0.2, 0.3]
 
-    await cache.store(vector, "cached answer")
+    await cache.store(vector, "cached answer", _meta())
 
-    assert await cache.lookup(vector) == "cached answer"
+    hit = await cache.lookup(vector)
+    assert hit is not None and hit.answer == "cached answer"
+    assert hit.meta.chunk_ids == ("c1",)
 
 
 async def test_near_identical_vector_hits_above_threshold() -> None:
     cache = InMemorySemanticCache(maxsize=8, ttl=60, threshold=0.95)
-    await cache.store([1.0, 0.0, 0.0], "cached answer")
+    await cache.store([1.0, 0.0, 0.0], "cached answer", _meta())
 
     # almost the same direction -> cosine ~0.999
-    assert await cache.lookup([0.9999, 0.0001, 0.0]) == "cached answer"
+    hit = await cache.lookup([0.9999, 0.0001, 0.0])
+    assert hit is not None and hit.answer == "cached answer"
 
 
 def test_cosine_scale_invariant() -> None:
@@ -35,26 +57,27 @@ def test_cosine_scale_invariant() -> None:
 
 async def test_different_vector_misses() -> None:
     cache = InMemorySemanticCache(maxsize=8, ttl=60, threshold=0.95)
-    await cache.store([1.0, 0.0], "cached answer")
+    await cache.store([1.0, 0.0], "cached answer", _meta())
 
     assert await cache.lookup([0.0, 1.0]) is None
 
 
 async def test_disabled_cache_is_noop() -> None:
     cache = InMemorySemanticCache(enabled=False)
-    await cache.store([1.0, 0.0], "answer")
+    await cache.store([1.0, 0.0], "answer", _meta())
 
     assert await cache.lookup([1.0, 0.0]) is None
 
 
 async def test_maxsize_evicts_oldest() -> None:
     cache = InMemorySemanticCache(maxsize=1, ttl=60, threshold=0.5)
-    await cache.store([1.0, 0.0], "first")
-    await cache.store([0.0, 1.0], "second")
+    await cache.store([1.0, 0.0], "first", _meta())
+    await cache.store([0.0, 1.0], "second", _meta())
 
     # first entry was evicted beyond maxsize
     assert await cache.lookup([1.0, 0.0]) is None
-    assert await cache.lookup([0.0, 1.0]) == "second"
+    hit = await cache.lookup([0.0, 1.0])
+    assert hit is not None and hit.answer == "second"
 
 
 async def test_expired_entries_are_dropped() -> None:
@@ -62,7 +85,7 @@ async def test_expired_entries_are_dropped() -> None:
     cache = InMemorySemanticCache(
         ttl=10.0, threshold=0.5, clock=lambda: clock_time[0]
     )
-    await cache.store([1.0, 0.0], "answer")
+    await cache.store([1.0, 0.0], "answer", _meta())
     clock_time[0] += 11.0  # past ttl
 
     assert await cache.lookup([1.0, 0.0]) is None
@@ -78,10 +101,10 @@ async def test_retriever_semantic_hit_skips_llm(
             self.canned = "cached answer"
 
         async def lookup(self, vector: list[float]):
-            return self.canned
+            return CachedAnswer(answer=self.canned, meta=_meta(chunk_ids=()))
 
-        async def store(self, vector, answer) -> None:
-            self.stored.append((vector, answer))
+        async def store(self, vector, answer, meta) -> None:
+            self.stored.append((vector, answer, meta))
 
     llm = FakeLLM()
     vector_store.search_results = [
@@ -110,8 +133,8 @@ async def test_retriever_stores_answer_after_llm_generation(
         async def lookup(self, vector: list[float]):
             return None
 
-        async def store(self, vector, answer) -> None:
-            self.stored.append((vector, answer))
+        async def store(self, vector, answer, meta) -> None:
+            self.stored.append((vector, answer, meta))
 
     vector_store.search_results = [
         {"id": "c1", "score": 0.9, "payload": {}, "text": "relevant"}

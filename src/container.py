@@ -31,6 +31,7 @@ from application.interfaces import (
     DocumentRepository,
     EmbeddingModel,
     FileStorage,
+    IsolatedParseRunner,
     LLMGenerator,
     ParserSelector,
     QueryPlanner,
@@ -336,6 +337,13 @@ class AppProvider(Provider):
         )
 
     @provide
+    def parse_runner(self) -> IsolatedParseRunner:
+        """Killable subprocess runner for OCR-capable parsers."""
+        from infrastructure.parsing import SubprocessParseRunner
+
+        return SubprocessParseRunner()
+
+    @provide
     def parser_selector(self, settings: Settings) -> ParserSelector:
         """Build the parser selector with OCR settings from config."""
         from infrastructure.parsing import DocumentParserSelector
@@ -343,6 +351,7 @@ class AppProvider(Provider):
         return DocumentParserSelector(
             pdf_ocr_strategy=settings.pdf_ocr_strategy,
             pdf_ocr_languages=settings.pdf_ocr_languages,
+            parse_isolation_enabled=settings.parse_isolation_enabled,
         )
 
     @provide
@@ -461,6 +470,7 @@ class AppProvider(Provider):
         lock: DistributedLock,
         entity_extractor: EntityExtractor,
         graph_store: GraphStore,
+        parse_runner: IsolatedParseRunner,
         settings: Settings,
     ) -> IndexerService:
         """Build the document indexing service."""
@@ -478,6 +488,10 @@ class AppProvider(Provider):
             child_chars=settings.parent_child_child_chars,
             entity_extractor=entity_extractor,
             graph_store=graph_store,
+            parse_max_workers=settings.parse_max_workers,
+            parse_runner=(
+                parse_runner if settings.parse_isolation_enabled else None
+            ),
         )
 
     @provide
@@ -512,6 +526,8 @@ class AppProvider(Provider):
             score_threshold=settings.search_score_threshold,
             context_max_chars=settings.search_context_max_chars,
             semantic_cache=semantic_cache,
+            embedding_model=settings.embedding_model,
+            cache_strict_acl=settings.semantic_cache_strict_acl,
             query_rewriter=query_rewriter,
             document_grader=document_grader,
             query_planner=query_planner,
