@@ -5,16 +5,27 @@ from unittest.mock import MagicMock
 
 from qdrant_client.http import models
 
-from infrastructure.vector_store.qdrant_store import QdrantStore
-from shared.hybrid import bm25_rank, rrf_fuse, tokenize
+from infrastructure.vector_store import QdrantStore
+from infrastructure.vector_store import (
+    bm25_rank,
+    bm25_scores,
+    rrf_fuse,
+    strip_stopwords,
+    tokenize,
+)
+
+import pytest
+
+pytestmark = pytest.mark.infra
 
 
-def test_tokenize_latin_cyrillic():
+
+def test_tokenize_latin_cyrillic() -> None:
     tokens = tokenize("Привет, World 42!")
     assert tokens == ["привет", "world", "42"]
 
 
-def test_bm25_ranks_relevant_doc_first():
+def test_bm25_ranks_relevant_doc_first() -> None:
     corpus = [
         "the quick brown fox jumps",
         "machine learning with vectors",
@@ -26,7 +37,7 @@ def test_bm25_ranks_relevant_doc_first():
     assert 1 not in ranked
 
 
-def test_bm25_multi_term_query():
+def test_bm25_multi_term_query() -> None:
     corpus = ["vector database search", "database of recipes", "unrelated text"]
     ranked = bm25_rank("database vector", corpus)
     assert ranked[0] == 0  # matches both terms
@@ -34,23 +45,23 @@ def test_bm25_multi_term_query():
     assert 2 not in ranked
 
 
-def test_bm25_empty_corpus():
+def test_bm25_empty_corpus() -> None:
     assert bm25_rank("query", []) == []
 
 
-def test_rrf_fuse_prefers_top_of_both_lists():
+def test_rrf_fuse_prefers_top_of_both_lists() -> None:
     fused = rrf_fuse([["a", "b"], ["b", "c"]], k=60)
     # "b" appears in both lists -> first
     assert fused[0] == "b"
     assert set(fused) == {"a", "b", "c"}
 
 
-def test_rrf_fuse_respects_top_k():
+def test_rrf_fuse_respects_top_k() -> None:
     fused = rrf_fuse([["a", "b", "c"], ["c", "d"]], k=60, top_k=2)
     assert len(fused) == 2
 
 
-def _point(pid, text, score=0.0):
+def _point(pid: str, text: str, score: float = 0.0):
     return SimpleNamespace(
         id=pid, score=score, payload={"text": text, "doc_id": "d"}, **{}
     )
@@ -66,7 +77,7 @@ def _hybrid_store(client) -> QdrantStore:
     )
 
 
-async def test_search_without_keyword_skips_scroll():
+async def test_search_without_keyword_skips_scroll() -> None:
     client = MagicMock()
     client.query_points.return_value = SimpleNamespace(points=[_point("v1", "text")])
     store = _hybrid_store(client)
@@ -75,7 +86,7 @@ async def test_search_without_keyword_skips_scroll():
     client.scroll.assert_not_called()
 
 
-async def test_search_with_keyword_fuses_results():
+async def test_search_with_keyword_fuses_results() -> None:
     client = MagicMock()
     client.query_points.return_value = SimpleNamespace(
         points=[
@@ -105,7 +116,7 @@ async def test_search_with_keyword_fuses_results():
     assert text_conditions[0].match.text == "quantum physics"
 
 
-async def test_search_hybrid_degrades_to_vector_when_scroll_fails():
+async def test_search_hybrid_degrades_to_vector_when_scroll_fails() -> None:
     client = MagicMock()
     client.query_points.return_value = SimpleNamespace(
         points=[SimpleNamespace(id="v1", score=0.9, payload={"text": "t"})]
@@ -117,7 +128,7 @@ async def test_search_hybrid_degrades_to_vector_when_scroll_fails():
     assert [h["id"] for h in hits] == ["v1"]
 
 
-async def test_create_collection_creates_fulltext_index_when_enabled():
+async def test_create_collection_creates_fulltext_index_when_enabled() -> None:
     client = MagicMock()
     store = _hybrid_store(client)
     await store.create_collection(384)
@@ -126,14 +137,14 @@ async def test_create_collection_creates_fulltext_index_when_enabled():
     assert kwargs["field_schema"].type == models.PayloadSchemaType.TEXT
 
 
-async def test_create_collection_without_fulltext_index():
+async def test_create_collection_without_fulltext_index() -> None:
     client = MagicMock()
     store = QdrantStore(client, "docs")
     await store.create_collection(384)
     client.create_payload_index.assert_not_called()
 
 
-async def test_scroll_first_payload():
+async def test_scroll_first_payload() -> None:
     client = MagicMock()
     client.scroll.return_value = (
         [SimpleNamespace(id="p1", payload={"embedding_model": "e5"})],
@@ -143,15 +154,33 @@ async def test_scroll_first_payload():
     assert (await store.scroll_first_payload()) == {"embedding_model": "e5"}
 
 
-async def test_scroll_first_payload_missing_collection_returns_none():
+async def test_scroll_first_payload_missing_collection_returns_none() -> None:
     client = MagicMock()
     client.scroll.side_effect = RuntimeError("not found")
     store = QdrantStore(client, "docs")
     assert (await store.scroll_first_payload()) is None
 
 
-async def test_scroll_first_payload_empty_collection_returns_none():
+async def test_scroll_first_payload_empty_collection_returns_none() -> None:
     client = MagicMock()
     client.scroll.return_value = ([], None)
     store = QdrantStore(client, "docs")
     assert (await store.scroll_first_payload()) is None
+
+def test_bm25_scores_per_document() -> None:
+    scores = bm25_scores(
+        "quantum physics",
+        ["quantum physics intro", "foxes in the garden"],
+    )
+    assert scores[0] > 0
+    assert scores[1] == 0.0
+
+
+def test_bm25_scores_empty_query_all_zero() -> None:
+    assert bm25_scores("", ["a b", "c d"]) == [0.0, 0.0]
+
+
+def test_strip_stopwords_removes_noise_tokens() -> None:
+    stopwords = frozenset({"ромашка"})
+    assert strip_stopwords("Ромашка quantum physics", stopwords) == "quantum physics"
+    assert strip_stopwords("quantum", frozenset()) == "quantum"

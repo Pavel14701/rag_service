@@ -42,7 +42,7 @@ def precision_at_k(
         return 0.0
     top = retrieved_ids[:k]
     relevant = set(relevant_ids)
-    return sum(1 for doc_id in top if doc_id in relevant) / k
+    return sum(doc_id in relevant for doc_id in top) / k
 
 
 def recall_at_k(
@@ -53,16 +53,20 @@ def recall_at_k(
         return 0.0
     relevant = set(relevant_ids)
     top = retrieved_ids[:k] if k and k > 0 else list(retrieved_ids)
-    return sum(1 for doc_id in top if doc_id in relevant) / len(relevant)
+    return sum(doc_id in relevant for doc_id in top) / len(relevant)
 
 
 def mrr(retrieved_ids: Sequence[str], relevant_ids: Sequence[str]) -> float:
     """Mean reciprocal rank: 1 / rank of the first relevant item."""
     relevant = set(relevant_ids)
-    for rank, doc_id in enumerate(retrieved_ids, start=1):
-        if doc_id in relevant:
-            return 1.0 / rank
-    return 0.0
+    return next(
+        (
+            1.0 / rank
+            for rank, doc_id in enumerate(retrieved_ids, start=1)
+            if doc_id in relevant
+        ),
+        0.0,
+    )
 
 
 def hit_rate(
@@ -110,7 +114,7 @@ def faithfulness(
         source_grams.update(_ngrams(_tokenize(text), n))
     if not source_grams:
         return 0.0
-    grounded = sum(1 for gram in answer_grams if gram in source_grams)
+    grounded = sum(gram in source_grams for gram in answer_grams)
     return grounded / len(answer_grams)
 
 
@@ -124,4 +128,4 @@ def refusal_rate(answers: Sequence[str]) -> float:
     """Fraction of answers that are refusals."""
     if not answers:
         return 0.0
-    return sum(1 for answer in answers if is_refusal(answer)) / len(answers)
+    return sum(is_refusal(answer) for answer in answers) / len(answers)

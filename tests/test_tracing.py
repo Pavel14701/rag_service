@@ -1,3 +1,5 @@
+from typing import Any
+
 """Tests for OpenTelemetry tracing instrumentation.
 
 Installs an SDK tracer provider with an in-memory exporter once for this
@@ -22,9 +24,11 @@ _provider = TracerProvider()
 _provider.add_span_processor(SimpleSpanProcessor(_exporter))
 otel_trace.set_tracer_provider(_provider)
 
-from entrypoints.base_consumer import BaseConsumer  # noqa: E402
-from infrastructure.llm.deepseek_client import DeepSeekClient  # noqa: E402
-from infrastructure.vector_store.qdrant_store import QdrantStore  # noqa: E402
+from entrypoints.consumers import BaseConsumer  # noqa: E402
+from infrastructure.llm import DeepSeekClient  # noqa: E402
+from infrastructure.vector_store import QdrantStore  # noqa: E402
+
+pytestmark = pytest.mark.observability
 
 
 def _span_names() -> list[str]:
@@ -32,20 +36,20 @@ def _span_names() -> list[str]:
 
 
 class QuietConsumer(BaseConsumer):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("trace_queue", FakeContainer({}))
 
-    async def handle(self, data):
+    async def handle(self, data: dict[str, Any]):
         return None
 
 
-async def test_message_processing_span_created():
+async def test_message_processing_span_created() -> None:
     consumer = QuietConsumer()
     await consumer._on_message(FakeMessage(b"{}"))
     assert "message.process" in _span_names()
 
 
-async def test_vector_search_span_created():
+async def test_vector_search_span_created() -> None:
     client = MagicMock()
     response = MagicMock()
     response.points = []

@@ -2,17 +2,22 @@
 
 from prometheus_client import REGISTRY
 
-from entrypoints.base_consumer import BaseConsumer
+from entrypoints.consumers import BaseConsumer
 
 from conftest import FakeContainer, FakeMessage
 
+import pytest
+
+pytestmark = pytest.mark.infra
+
+
 
 class OutcomeConsumer(BaseConsumer):
-    def __init__(self, container, fail: bool = False):
+    def __init__(self, container, fail: bool = False) -> None:
         super().__init__("metric_queue", container)
         self.fail = fail
 
-    async def handle(self, data):
+    async def handle(self, data) -> None:
         if self.fail:
             raise RuntimeError("boom")
 
@@ -21,7 +26,7 @@ def metric(name: str, **labels) -> float:
     return REGISTRY.get_sample_value(name, labels) or 0.0
 
 
-async def test_success_increments_messages_total():
+async def test_success_increments_messages_total() -> None:
     consumer = OutcomeConsumer(FakeContainer({}), fail=False)
     before = metric("rag_messages_total", queue="metric_queue", status="success")
     await consumer._on_message(FakeMessage(b"{}"))
@@ -29,7 +34,7 @@ async def test_success_increments_messages_total():
     assert after == before + 1
 
 
-async def test_error_increments_error_and_retry_counters():
+async def test_error_increments_error_and_retry_counters() -> None:
     consumer = OutcomeConsumer(FakeContainer({}), fail=True)
     before_err = metric("rag_messages_total", queue="metric_queue", status="error")
     before_retry = metric("rag_messages_total", queue="metric_queue", status="retry")
@@ -44,7 +49,7 @@ async def test_error_increments_error_and_retry_counters():
     )
 
 
-async def test_message_duration_histogram_observed():
+async def test_message_duration_histogram_observed() -> None:
     consumer = OutcomeConsumer(FakeContainer({}), fail=False)
     before = metric("rag_message_processing_seconds_count", queue="metric_queue")
     await consumer._on_message(FakeMessage(b"{}"))
@@ -52,7 +57,7 @@ async def test_message_duration_histogram_observed():
     assert after == before + 1
 
 
-async def test_dlq_counter():
+async def test_dlq_counter() -> None:
     consumer = OutcomeConsumer(FakeContainer({}), fail=True)
     before = metric("rag_messages_total", queue="metric_queue", status="dlq")
     await consumer._on_message(FakeMessage(b"{}", headers={"x-retry-count": 3}))

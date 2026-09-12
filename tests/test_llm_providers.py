@@ -6,9 +6,11 @@ import httpx
 import pytest
 
 from config import Settings
-from infrastructure.llm.openai_client import OpenAIChatClient
-from infrastructure.llm.anthropic_client import AnthropicClient
-from infrastructure.llm.deepseek_client import DeepSeekClient
+from infrastructure.llm import OpenAIChatClient
+from infrastructure.llm import AnthropicClient
+from infrastructure.llm import DeepSeekClient
+
+pytestmark = pytest.mark.llm
 
 
 def _ok_openai_response() -> httpx.Response:
@@ -139,22 +141,22 @@ async def test_deepseek_client_still_sends_deepseek_chat_model():
 # ---------- provider selection (config + container) ----------
 
 
-def test_settings_rejects_unknown_provider():
+def test_settings_rejects_unknown_provider() -> None:
     with pytest.raises(ValueError, match="llm_provider"):
         Settings(llm_provider="gemini", jwt_secret="s")
 
 
-def test_settings_normalizes_openai_compatible_alias():
+def test_settings_normalizes_openai_compatible_alias() -> None:
     settings = Settings(llm_provider="OpenAI-Compatible", jwt_secret="s")
     assert settings.llm_provider == "openai"
 
 
-def _container_env(monkeypatch, **extra):
+def _container_env(monkeypatch, **extra) -> None:
     for key, value in {"JWT_SECRET": "test-secret", **extra}.items():
         monkeypatch.setenv(key, value)
 
 
-async def test_container_selects_openai_provider(monkeypatch):
+async def test_container_selects_openai_provider(monkeypatch) -> None:
     from container import create_container
     from application.interfaces import LLMGenerator
 
@@ -169,7 +171,7 @@ async def test_container_selects_openai_provider(monkeypatch):
     assert client._model == "gpt-4o-mini"
 
 
-async def test_container_selects_anthropic_provider(monkeypatch):
+async def test_container_selects_anthropic_provider(monkeypatch) -> None:
     from container import create_container
     from application.interfaces import LLMGenerator
 
@@ -179,7 +181,7 @@ async def test_container_selects_anthropic_provider(monkeypatch):
     assert client._model == "claude-3-5-haiku-latest"
 
 
-async def test_container_defaults_to_deepseek(monkeypatch):
+async def test_container_defaults_to_deepseek(monkeypatch) -> None:
     from container import create_container
     from application.interfaces import LLMGenerator
 
@@ -189,7 +191,7 @@ async def test_container_defaults_to_deepseek(monkeypatch):
     assert type(client) is DeepSeekClient
 
 
-async def test_container_missing_provider_key_raises(monkeypatch):
+async def test_container_missing_provider_key_raises(monkeypatch) -> None:
     from container import create_container
     from application.interfaces import LLMGenerator
 

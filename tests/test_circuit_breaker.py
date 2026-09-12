@@ -3,14 +3,16 @@
 import httpx
 import pytest
 
-from infrastructure.llm.deepseek_client import DeepSeekClient
-from shared.circuit_breaker import (
+from infrastructure.llm import DeepSeekClient
+from infrastructure.resilience import (
     CLOSED,
     HALF_OPEN,
     OPEN,
     CircuitBreaker,
     CircuitOpenError,
 )
+
+pytestmark = pytest.mark.infra
 
 
 class FakeClock:
@@ -21,7 +23,7 @@ class FakeClock:
         return self.now
 
 
-def _breaker(threshold=3, timeout=60.0):
+def _breaker(threshold: int = 3, timeout: float = 60.0):
     clock = FakeClock()
     return CircuitBreaker(
         name="test",
@@ -31,13 +33,13 @@ def _breaker(threshold=3, timeout=60.0):
     ), clock
 
 
-async def test_starts_closed_and_allows_calls():
+async def test_starts_closed_and_allows_calls() -> None:
     breaker, _ = _breaker()
     assert breaker.state == CLOSED
     assert breaker.allow() is True
 
 
-async def test_opens_after_failure_threshold():
+async def test_opens_after_failure_threshold() -> None:
     breaker, _ = _breaker(threshold=3)
     for _ in range(3):
         breaker.record_failure()
@@ -45,7 +47,7 @@ async def test_opens_after_failure_threshold():
     assert breaker.allow() is False
 
 
-async def test_rejections_do_not_count_as_failures():
+async def test_rejections_do_not_count_as_failures() -> None:
     breaker, _ = _breaker(threshold=2)
     breaker.record_failure()
     breaker.record_failure()
@@ -54,7 +56,7 @@ async def test_rejections_do_not_count_as_failures():
     assert breaker.state == OPEN
 
 
-async def test_half_open_after_reset_timeout_then_success_closes():
+async def test_half_open_after_reset_timeout_then_success_closes() -> None:
     breaker, clock = _breaker(threshold=1, timeout=60.0)
     breaker.record_failure()
     assert breaker.allow() is False
@@ -66,7 +68,7 @@ async def test_half_open_after_reset_timeout_then_success_closes():
     assert breaker.state == CLOSED
 
 
-async def test_half_open_failure_reopens():
+async def test_half_open_failure_reopens() -> None:
     breaker, clock = _breaker(threshold=1, timeout=60.0)
     breaker.record_failure()
     clock.now = 61.0
@@ -76,7 +78,7 @@ async def test_half_open_failure_reopens():
     assert breaker.allow() is False
 
 
-async def test_success_resets_failure_count():
+async def test_success_resets_failure_count() -> None:
     breaker, _ = _breaker(threshold=3)
     breaker.record_failure()
     breaker.record_failure()
@@ -92,7 +94,7 @@ async def test_call_wrapper_records_success_and_failure():
     async def ok():
         return "value"
 
-    async def boom():
+    async def boom() -> None:
         raise RuntimeError("down")
 
     assert await breaker.call(ok) == "value"
@@ -112,7 +114,7 @@ def _mock_transport(calls: list, status_code: int = 500):
     return httpx.MockTransport(handler)
 
 
-async def test_deepseek_client_opens_circuit_after_failures():
+async def test_deepseek_client_opens_circuit_after_failures() -> None:
     calls: list = []
     breaker = CircuitBreaker(name="llm-test", failure_threshold=2, reset_timeout=60.0)
     client = DeepSeekClient(
@@ -165,8 +167,8 @@ async def test_deepseek_client_success_closes_circuit():
     assert len(calls) == 2
 
 
-async def test_cache_hit_records_success():
-    from shared.caching import TTLCache
+async def test_cache_hit_records_success() -> None:
+    from infrastructure.caching import TTLCache
 
     breaker = CircuitBreaker(name="llm-test", failure_threshold=1, reset_timeout=60.0)
     breaker.record_failure()

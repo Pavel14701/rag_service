@@ -7,8 +7,10 @@ Serves, on a single port:
 """
 
 import asyncio
+import contextlib
+from collections.abc import Callable, Awaitable
 import json
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
@@ -78,10 +80,8 @@ class HealthServer:
             pass  # malformed or aborted connections are ignored
         finally:
             writer.close()
-            try:
+            with contextlib.suppress(ConnectionError, RuntimeError):
                 await writer.wait_closed()
-            except (ConnectionError, RuntimeError):
-                pass
 
     async def handle_request(
         self, method: str, path: str

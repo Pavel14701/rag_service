@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 from evaluation import EvalRunner, load_cases  # noqa: E402
 from container import create_container  # noqa: E402
-from application.services.retriever import RetrieverService  # noqa: E402
+from application.services import RetrieverService  # noqa: E402
 
 
 async def main() -> int:
@@ -45,6 +45,14 @@ async def main() -> int:
         help='Path to the golden dataset JSON',
     )
     parser.add_argument('--top-k', type=int, default=5, help='Default top_k')
+    parser.add_argument(
+        '--llm-judge',
+        action='store_true',
+        help=(
+            'Grade faithfulness with the LLM (semantic judge) instead '
+            'of the lexical heuristic'
+        ),
+    )
     parser.add_argument(
         '--json-out', type=Path, default=None, help='Write the report as JSON'
     )
@@ -65,7 +73,18 @@ async def main() -> int:
             user_id=user_id, query=query, top_k=top_k
         )
 
-    runner = EvalRunner(answer_fn, top_k=args.top_k)
+    faithfulness_judge = None
+    if args.llm_judge:
+        from application.interfaces import LLMGenerator  # noqa: E402
+
+        from evaluation.judge import LLMFaithfulnessJudge  # noqa: E402
+
+        llm = await container.get(LLMGenerator)
+        faithfulness_judge = LLMFaithfulnessJudge(llm)
+        print('faithfulness judge: LLM (falls back to lexical on errors)')
+    runner = EvalRunner(
+        answer_fn, top_k=args.top_k, faithfulness_judge=faithfulness_judge
+    )
     report = await runner.run(cases)
 
     report_dict = report.to_dict()

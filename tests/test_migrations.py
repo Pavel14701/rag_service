@@ -13,11 +13,13 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy.schema import CreateIndex, CreateColumn
 
-from infrastructure.repositories.postgres_repo import Base
+from infrastructure.repositories import Base
+
+pytestmark = pytest.mark.infra
 
 
 @pytest.fixture(autouse=True)
-def _postgres_dsn(monkeypatch):
+def _postgres_dsn(monkeypatch) -> None:
     # Offline mode never connects; Settings() in env.py needs POSTGRES_DSN
     # so it doesn't demand the app-only DEEPSEEK_API_KEY / JWT_SECRET.
     monkeypatch.setenv("POSTGRES_DSN", "postgresql+asyncpg://u:p@localhost/db")
@@ -49,7 +51,7 @@ def migration_sql() -> str:
     return _offline_sql("upgrade", "head")
 
 
-def test_migration_matches_orm_columns(migration_sql: str):
+def test_migration_matches_orm_columns(migration_sql: str) -> None:
     """Every ORM column (type + nullability) must appear in the migration."""
     import sqlalchemy.dialects.postgresql as postgresql
     from sqlalchemy.schema import CreateColumn
@@ -68,7 +70,7 @@ def test_migration_matches_orm_columns(migration_sql: str):
         assert f"PRIMARY KEY ({pk})" in migration_sql, table.name
 
 
-def test_migration_creates_all_orm_indexes(migration_sql: str):
+def test_migration_creates_all_orm_indexes(migration_sql: str) -> None:
     import sqlalchemy.dialects.postgresql as postgresql
     for table in Base.metadata.tables.values():
         for index in table.indexes:
@@ -80,7 +82,7 @@ def test_migration_creates_all_orm_indexes(migration_sql: str):
             )
 
 
-def test_downgrade_reverses_schema():
+def test_downgrade_reverses_schema() -> None:
     down_sql = _offline_sql("downgrade", "head:base")
     for table_name in Base.metadata.tables:
         assert f"DROP TABLE {table_name}" in re.sub(r"\s+", " ", down_sql)

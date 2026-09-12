@@ -82,7 +82,7 @@ class EvalReport:
             'ndcg': self._avg('ndcg'),
             'faithfulness': self._avg('faithfulness'),
             'refusal_rate': refusal_rate([c.answer for c in self.cases]),
-            'errors': sum(1 for c in self.cases if c.error),
+            'errors': sum(bool(c.error) for c in self.cases),
             'cases': [c.to_dict() for c in self.cases],
         }
 
@@ -101,10 +101,14 @@ class EvalRunner:
         answer_fn: AnswerFn,
         top_k: int = 5,
         faithfulness_n: int = 3,
+        faithfulness_judge: Any | None = None,
     ) -> None:
         self._answer_fn = answer_fn
         self._top_k = top_k
         self._faithfulness_n = faithfulness_n
+        # Optional LLM-as-a-judge (evaluation.judge.LLMFaithfulnessJudge);
+        # None keeps the deterministic lexical heuristic.
+        self._faithfulness_judge = faithfulness_judge
 
     async def run(self, cases: Sequence[EvalCase]) -> EvalReport:
         """Run all cases sequentially and aggregate metrics."""
@@ -117,6 +121,17 @@ class EvalRunner:
             await asyncio.gather(*(self._run_case(c) for c in cases))
         )
         return EvalReport(cases=results)
+
+    async def _faithfulness_for(
+        self, case: EvalCase, answer: str, source_texts: Sequence[str]
+    ) -> float:
+        """Judge faithfulness: LLM when configured, lexical otherwise."""
+        if self._faithfulness_judge is not None:
+            score: float = await self._faithfulness_judge.judge(
+                case.query, answer, source_texts
+            )
+            return score
+        return faithfulness(answer, source_texts, n=self._faithfulness_n)
 
     async def _run_case(self, case: EvalCase) -> CaseResult:
         top_k = case.top_k if case.top_k is not None else self._top_k
@@ -153,8 +168,10 @@ class EvalRunner:
             mrr=mrr(retrieved_doc_ids, case.relevant_doc_ids),
             hit=hit_rate(retrieved_doc_ids, case.relevant_doc_ids, top_k),
             ndcg=ndcg_at_k(retrieved_doc_ids, case.relevant_doc_ids, top_k),
-            faithfulness=faithfulness(
-                answer, source_texts, n=self._faithfulness_n
+            faithfulness=await self._faithfulness_for(
+                case,
+                answer,
+                source_texts,
             ),
         )
 

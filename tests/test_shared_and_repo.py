@@ -2,28 +2,33 @@
 
 import hashlib
 
-from domain.entities.document import DocStatus
-from shared.hashing import compute_file_hash
-from infrastructure.repositories.postgres_repo import DocumentORM, PostgresDocumentRepository
+from domain.model import DocStatus
+from infrastructure.file_storage import compute_file_hash
+from infrastructure.repositories import DocumentORM, PostgresDocumentRepository
 
 from conftest import make_document
 
+import pytest
 
-def test_compute_file_hash(tmp_path):
+pytestmark = pytest.mark.infra
+
+
+
+def test_compute_file_hash(tmp_path) -> None:
     path = tmp_path / "file.bin"
     path.write_bytes(b"hello world")
     expected = hashlib.sha256(b"hello world").hexdigest()
     assert compute_file_hash(path) == expected
 
 
-def test_compute_file_hash_chunked_read(tmp_path):
+def test_compute_file_hash_chunked_read(tmp_path) -> None:
     path = tmp_path / "big.bin"
     data = b"x" * (4096 * 3 + 7)  # spans several 4096-byte chunks
     path.write_bytes(data)
     assert compute_file_hash(path) == hashlib.sha256(data).hexdigest()
 
 
-def test_orm_domain_roundtrip():
+def test_orm_domain_roundtrip() -> None:
     doc = make_document(status=DocStatus.INDEXED)
     orm = PostgresDocumentRepository._from_domain(doc)
     assert isinstance(orm, DocumentORM)
@@ -34,7 +39,7 @@ def test_orm_domain_roundtrip():
     assert restored == doc
 
 
-def test_deleted_filter_compiles():
+def test_deleted_filter_compiles() -> None:
     """Regression: `not DocumentORM.deleted` crashed with TypeError in SQLAlchemy."""
     from sqlalchemy import select
 

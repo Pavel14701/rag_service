@@ -15,7 +15,7 @@ import sys
 sys.path.insert(0, 'src')
 
 from config import Settings  # noqa: E402
-from infrastructure.repositories.postgres_repo import (  # noqa: E402
+from infrastructure.repositories import (  # noqa: E402
     PostgresDocumentRepository,
 )
 from sqlalchemy.ext.asyncio import (  # noqa: E402

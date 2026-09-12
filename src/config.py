@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     minio_secure: bool = False
     qdrant_https: bool = False
     qdrant_api_key: str | None = None
+    # gRPC transport: faster serialization and ~32 MB message limits
+    # protect from huge batch responses on high-load reindexes.
+    qdrant_prefer_grpc: bool = True
     log_level: str = 'INFO'
     log_json: bool = True
     metrics_port: int = 8000
@@ -82,6 +85,9 @@ class Settings(BaseSettings):
     llm_cache_ttl: float = 3600.0
     llm_cache_size: int = 256
 
+    # Distributed indexing lock (Redis): TTL for lock:ingest:{doc_id}.
+    index_lock_ttl: float = 300.0
+
     # Qdrant HNSW tuning (None = server defaults).
     qdrant_hnsw_m: int | None = None
     qdrant_hnsw_ef_construct: int | None = None
@@ -97,6 +103,11 @@ class Settings(BaseSettings):
     llm_circuit_failure_threshold: int = 5
     llm_circuit_reset_timeout: float = 60.0
 
+    # Truncated answers (finish_reason=length / stop_reason=max_tokens)
+    # are never cached; when True, a follow-up continuation request
+    # merges the cut-off generation into one full answer.
+    llm_continue_on_truncation: bool = False
+
     # Optional Redis for distributed caches (LLM answers, query embeddings).
     # When unset, in-process TTL caches are used.
     redis_url: str | None = None
@@ -106,6 +117,65 @@ class Settings(BaseSettings):
     search_hybrid: bool = False
     search_hybrid_rrf_k: int = 60
     search_hybrid_candidates: int = 50
+
+    # Retrieval quality guards.
+    # Min vector similarity score to keep a hit (0 = disabled;
+    # hybrid RRF scores have another scale - use the BM25 one).
+    search_score_threshold: float = 0.0
+    # Character budget for the LLM context (0 = unlimited); keeps
+    # headroom for the answer inside the LLM max_tokens window.
+    search_context_max_chars: int = 12000
+    # Comma-separated stop words dropped from the BM25 keyword query
+    # (popular terms flooding lexical candidates with noise).
+    search_hybrid_stopwords: str = ''
+    # Min BM25 score for a lexical candidate to enter RRF fusion.
+    search_bm25_score_threshold: float = 0.0
+
+    # Chunking quality: text chunks shorter than this (chars) are
+    # merged into the neighbouring text chunk (0 = disabled).
+    chunk_min_chars: int = 0
+
+    # Hard parsing time budget in seconds (0 = unlimited). Guards
+    # against OCR/tesseract hangs on binary garbage renamed to .pdf.
+    parse_timeout: float = 300.0
+    # Verify real MIME type (magic bytes) against the file extension
+    # before parsing; mismatch = permanent failure (no retry).
+    parse_validate_mime: bool = True
+
+    # Shared HTTP client pool for outbound LLM API calls (sockets are
+    # the scarcest resource on a high-load host: a per-call client
+    # exhausts them under burst).
+    http_max_connections: int = 200
+    http_keepalive_connections: int = 50
+
+    # Queue length cap with reject-publish (0 = unlimited, current
+    # behavior). Protects RabbitMQ memory when consumers fall behind.
+    queue_max_length: int = 0
+
+    # Semantic answer cache: reuse an LLM answer when a previously
+    # seen question is near-identical in embedding space (cosine >=
+    # threshold). Opt-in: in multi-tenant deployments cached answers
+    # were generated under a specific user's ACL - enable only when
+    # that is acceptable (e.g. uniform access across tenants).
+    semantic_cache_enabled: bool = False
+    semantic_cache_maxsize: int = 256
+    semantic_cache_ttl: float = 3600.0
+    semantic_cache_threshold: float = 0.95
+
+    # Query rewriting: an auxiliary LLM call normalizes/ expands the
+    # question before search (better recall, +1 LLM round-trip).
+    query_rewrite_enabled: bool = False
+
+    # Blue-Green reindex: build a shadow collection and flip the
+    # collection alias atomically instead of dropping the live one
+    # (search keeps serving during the whole reindex).
+    reindex_blue_green: bool = True
+
+    # Parent-Child retrieval: text elements are split into parent
+    # chunks (max_tokens) and child chunks (this many chars); children
+    # are embedded, but the LLM receives the parent context and hits
+    # on children of the same parent are auto-merged (0 = disabled).
+    parent_child_child_chars: int = 0
 
     # PDF OCR (unstructured partition strategy) for scanned documents.
     pdf_ocr_strategy: str = 'auto'  # auto | hi_res | ocr_only | fast

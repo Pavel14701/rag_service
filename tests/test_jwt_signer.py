@@ -3,13 +3,15 @@
 import pytest
 import jwt as jose_jwt
 
-from infrastructure.security.jwt_signer import JWTSigner
-from infrastructure.security.jwt_validator import JWTValidator
+from infrastructure.security import JWTSigner
+from infrastructure.security import JWTValidator
 
 from test_jwt_validator import SECRET, PRIVATE_KEY_PEM, PUBLIC_KEY_PEM
 
+pytestmark = pytest.mark.security
 
-def test_hs256_roundtrip_contains_security_claims():
+
+def test_hs256_roundtrip_contains_security_claims() -> None:
     signer = JWTSigner(SECRET)
     token = signer.issue("user-1", groups=["team-a"])
     payload = JWTValidator(SECRET).validate(token)
@@ -22,7 +24,7 @@ def test_hs256_roundtrip_contains_security_claims():
     assert payload["exp"] - payload["iat"] == 3600  # default TTL
 
 
-def test_rs256_sign_and_validate_roundtrip():
+def test_rs256_sign_and_validate_roundtrip() -> None:
     signer = JWTSigner(PRIVATE_KEY_PEM, algorithm="RS256", audience="rag-service")
     validator = JWTValidator(PUBLIC_KEY_PEM, algorithm="RS256", audience="rag-service")
 
@@ -34,7 +36,7 @@ def test_rs256_sign_and_validate_roundtrip():
     assert payload["exp"] - payload["iat"] == 600
 
 
-def test_rs256_token_forged_with_hs256_rejected():
+def test_rs256_token_forged_with_hs256_rejected() -> None:
     signer = JWTSigner(PRIVATE_KEY_PEM, algorithm="RS256")
     token = signer.issue("u")
     validator = JWTValidator(PUBLIC_KEY_PEM, algorithm="RS256")
@@ -48,12 +50,12 @@ def test_rs256_token_forged_with_hs256_rejected():
     forged_payload = json.loads(
         base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
     )
-    forged = jose_jwt.encode(forged_payload, "attacker-hmac-secret", algorithm="HS256")
+    forged = jose_jwt.encode(forged_payload, "attacker-hmac-secret-0123456789abcdef", algorithm="HS256")
     with pytest.raises(ValueError, match="unexpected algorithm"):
         validator.validate(forged)
 
 
-def test_issuer_and_audience_embedded_when_configured():
+def test_issuer_and_audience_embedded_when_configured() -> None:
     signer = JWTSigner(SECRET, issuer="https://auth.example", audience="rag-service")
     payload = JWTValidator(
         SECRET, issuer="https://auth.example", audience="rag-service"
@@ -62,14 +64,14 @@ def test_issuer_and_audience_embedded_when_configured():
     assert payload["aud"] == "rag-service"
 
 
-def test_jti_is_unique_per_token():
+def test_jti_is_unique_per_token() -> None:
     signer = JWTSigner(SECRET)
     jti1 = JWTValidator(SECRET).validate(signer.issue("u"))["jti"]
     jti2 = JWTValidator(SECRET).validate(signer.issue("u"))["jti"]
     assert jti1 != jti2
 
 
-def test_extra_claims_merged():
+def test_extra_claims_merged() -> None:
     signer = JWTSigner(SECRET)
     payload = JWTValidator(SECRET).validate(
         signer.issue("u", extra={"role": "admin"})
@@ -77,6 +79,6 @@ def test_extra_claims_merged():
     assert payload["role"] == "admin"
 
 
-def test_unsupported_algorithm_rejected():
+def test_unsupported_algorithm_rejected() -> None:
     with pytest.raises(ValueError, match="Unsupported JWT algorithm"):
         JWTSigner(SECRET, algorithm="none")

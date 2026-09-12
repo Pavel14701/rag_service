@@ -1,27 +1,206 @@
 [
   {
-    "query": "What is retrieval-augmented generation?",
+    "query": "How many paid vacation days do employees get per year?",
     "user_id": "eval-user",
-    "relevant_doc_ids": ["11111111-1111-1111-1111-111111111111"],
+    "relevant_doc_ids": [
+      "7ea08e13-8c30-5eb8-98c1-77fd91e53629"
+    ],
     "top_k": 5,
     "source_texts": [
-      "Retrieval-augmented generation (RAG) combines a retriever over a document index with a generative model grounded in the retrieved context."
+      "Every full-time employee receives 25 paid vacation days per calendar year."
+    ],
+    "relevant_corpus_files": [
+      "hr_vacation.md"
     ]
   },
   {
-    "query": "Как работает гибридный поиск?",
+    "query": "Can I take vacation in December?",
     "user_id": "eval-user",
-    "relevant_doc_ids": ["22222222-2222-2222-2222-222222222222"],
+    "relevant_doc_ids": [
+      "7ea08e13-8c30-5eb8-98c1-77fd91e53629"
+    ],
     "top_k": 5,
     "source_texts": [
-      "Гибридный поиск объединяет векторный (семантический) и лексический (BM25) поиск, сливая ранжинги через Reciprocal Rank Fusion."
+      "The entire month of December is a company-wide black-out period: vacation requests covering December are rejected unless approved personally by the VP of Engineering."
+    ],
+    "relevant_corpus_files": [
+      "hr_vacation.md"
     ]
   },
   {
-    "query": "query with no relevant documents in the golden set",
+    "query": "How many unused vacation days can I carry over into the next year?",
+    "user_id": "eval-user",
+    "relevant_doc_ids": [
+      "7ea08e13-8c30-5eb8-98c1-77fd91e53629"
+    ],
+    "top_k": 5,
+    "source_texts": [
+      "Up to 5 unused days may be carried over into the next calendar year; they expire on 31 March."
+    ],
+    "relevant_corpus_files": [
+      "hr_vacation.md"
+    ]
+  },
+  {
+    "query": "How many days per week can I work remotely?",
+    "user_id": "eval-user",
+    "relevant_doc_ids": [
+      "eb1cadfd-5eaf-5e04-bff6-0776856bd60e"
+    ],
+    "top_k": 5,
+    "source_texts": [
+      "Employees may work remotely up to 3 days per week; office presence is expected on Tuesdays and Wednesdays."
+    ],
+    "relevant_corpus_files": [
+      "hr_remote.md"
+    ]
+  },
+  {
+    "query": "Do employees get a company laptop?",
+    "user_id": "eval-user",
+    "relevant_doc_ids": [
+      "eb1cadfd-5eaf-5e04-bff6-0776856bd60e"
+    ],
+    "top_k": 5,
+    "source_texts": [
+      "Every employee - office, hybrid or fully remote - receives a company laptop as standard equipment."
+    ],
+    "relevant_corpus_files": [
+      "hr_remote.md"
+    ]
+  },
+  {
+    "query": "What should I do if I entered my credentials on a phishing page?",
+    "user_id": "eval-user",
+    "relevant_doc_ids": [
+      "f4b932f9-3d4f-58a0-9021-6a445fef7987"
+    ],
+    "top_k": 5,
+    "source_texts": [
+      "If you clicked a malicious link or entered credentials on a suspicious page: disconnect from the network and notify security@northwind.example immediately."
+    ],
+    "relevant_corpus_files": [
+      "it_security.md"
+    ]
+  },
+  {
+    "query": "What is the per diem for business trips to Germany?",
+    "user_id": "eval-user",
+    "relevant_doc_ids": [
+      "92c9aa32-072a-5e72-9620-771337a373b5"
+    ],
+    "top_k": 5,
+    "source_texts": [
+      "The daily per diem for Germany is 60 EUR."
+    ],
+    "relevant_corpus_files": [
+      "travel_expenses.md"
+    ]
+  },
+  {
+    "query": "When do I need to submit my expense report after a business trip?",
+    "user_id": "eval-user",
+    "relevant_doc_ids": [
+      "92c9aa32-072a-5e72-9620-771337a373b5"
+    ],
+    "top_k": 5,
+    "source_texts": [
+      "Expense reports must be submitted in the finance portal within 14 calendar days after the end of the trip."
+    ],
+    "relevant_corpus_files": [
+      "travel_expenses.md"
+    ]
+  },
+  {
+    "query": "What is the maximum payload of the Atlas robot?",
+    "user_id": "eval-user",
+    "relevant_doc_ids": [
+      "43c8fc1a-79dd-5517-9aa9-260d2bba0263"
+    ],
+    "top_k": 5,
+    "source_texts": [
+      "Max payload: 12 kg (arm extended: 6 kg)."
+    ],
+    "relevant_corpus_files": [
+      "product_atlas.md"
+    ]
+  },
+  {
+    "query": "How long does the Atlas battery last on a single charge?",
+    "user_id": "eval-user",
+    "relevant_doc_ids": [
+      "43c8fc1a-79dd-5517-9aa9-260d2bba0263"
+    ],
+    "top_k": 5,
+    "source_texts": [
+      "Battery runtime: up to 8 hours of continuous operation on a single charge."
+    ],
+    "relevant_corpus_files": [
+      "product_atlas.md"
+    ]
+  },
+  {
+    "query": "What is the warranty period for Atlas?",
+    "user_id": "eval-user",
+    "relevant_doc_ids": [
+      "500b0fa6-1d7d-502a-8ba4-8ebd9a290f37"
+    ],
+    "top_k": 5,
+    "source_texts": [
+      "Atlas ships with a 2-year limited warranty covering parts and labor."
+    ],
+    "relevant_corpus_files": [
+      "product_atlas_faq.md"
+    ]
+  },
+  {
+    "query": "What is the first response time for a Priority-1 support incident?",
+    "user_id": "eval-user",
+    "relevant_doc_ids": [
+      "b8031955-954f-5245-a6dc-479576ea416b"
+    ],
+    "top_k": 5,
+    "source_texts": [
+      "P1 - Critical: first response 1 hour, 24/7."
+    ],
+    "relevant_corpus_files": [
+      "sla_support.md"
+    ]
+  },
+  {
+    "query": "Do long-serving employees get extra vacation days?",
+    "user_id": "eval-user",
+    "relevant_doc_ids": [
+      "7ea08e13-8c30-5eb8-98c1-77fd91e53629"
+    ],
+    "top_k": 5,
+    "source_texts": [
+      "Employees with more than 5 years of tenure receive 2 additional days (27 days total)."
+    ],
+    "relevant_corpus_files": [
+      "hr_vacation.md"
+    ]
+  },
+  {
+    "query": "Is business class allowed on long-haul flights?",
+    "user_id": "eval-user",
+    "relevant_doc_ids": [
+      "92c9aa32-072a-5e72-9620-771337a373b5"
+    ],
+    "top_k": 5,
+    "source_texts": [
+      "Business class is allowed for long-haul flights (6+ hours). Economy class only for flights under 6 hours."
+    ],
+    "relevant_corpus_files": [
+      "travel_expenses.md"
+    ]
+  },
+  {
+    "query": "What is the company's official position on interstellar travel?",
     "user_id": "eval-user",
     "relevant_doc_ids": [],
     "top_k": 5,
-    "source_texts": []
+    "source_texts": [],
+    "relevant_corpus_files": []
   }
 ]

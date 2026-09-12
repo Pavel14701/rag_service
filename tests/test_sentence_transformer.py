@@ -4,15 +4,20 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from infrastructure.embedding.sentence_transformer import SentenceTransformerEmbedding
+from infrastructure.embedding import SentenceTransformerEmbedding
+
+import pytest
+
+pytestmark = pytest.mark.infra
 
 
-async def test_embed_returns_lists_and_calls_encode_with_kwargs():
+
+async def test_embed_returns_lists_and_calls_encode_with_kwargs() -> None:
     fake_model = MagicMock()
     fake_model.encode.return_value = np.array([[0.1, 0.2], [0.3, 0.4]])
 
     with patch(
-        "infrastructure.embedding.sentence_transformer.SentenceTransformer",
+        "infrastructure.embedding.SentenceTransformer",
         return_value=fake_model,
     ):
         model = SentenceTransformerEmbedding("fake-model")
@@ -26,12 +31,12 @@ async def test_embed_returns_lists_and_calls_encode_with_kwargs():
     assert fake_model.encode.call_args.args == (["a", "b"],)
 
 
-def test_dimension_from_model():
+def test_dimension_from_model() -> None:
     fake_model = MagicMock()
     fake_model.get_sentence_embedding_dimension.return_value = 384
 
     with patch(
-        "infrastructure.embedding.sentence_transformer.SentenceTransformer",
+        "infrastructure.embedding.SentenceTransformer",
         return_value=fake_model,
     ):
         model = SentenceTransformerEmbedding("fake-model")
@@ -44,24 +49,24 @@ def _make_model(**kwargs) -> SentenceTransformerEmbedding:
     fake_model.encode.return_value = np.array([[0.0, 1.0]])
     fake_model.get_sentence_embedding_dimension.return_value = 2
     with patch(
-        "infrastructure.embedding.sentence_transformer.SentenceTransformer",
+        "infrastructure.embedding.SentenceTransformer",
         return_value=fake_model,
     ):
         return SentenceTransformerEmbedding("fake-model", **kwargs)
 
 
-async def test_embed_query_applies_e5_prefix():
+async def test_embed_query_applies_e5_prefix() -> None:
     model = _make_model(query_prefix="query: ")
     result = await model.embed_query(["what is rag?"])
     assert result == [[0.0, 1.0]]
 
 
-async def test_embed_passages_applies_e5_prefix():
+async def test_embed_passages_applies_e5_prefix() -> None:
     fake_model = MagicMock()
     fake_model.encode.return_value = np.array([[0.0, 1.0]])
     fake_model.get_sentence_embedding_dimension.return_value = 2
     with patch(
-        "infrastructure.embedding.sentence_transformer.SentenceTransformer",
+        "infrastructure.embedding.SentenceTransformer",
         return_value=fake_model,
     ):
         model = SentenceTransformerEmbedding(
@@ -72,12 +77,12 @@ async def test_embed_passages_applies_e5_prefix():
     assert fake_model.encode.call_args.args == (["passage: some text"],)
 
 
-async def test_no_prefix_by_default():
+async def test_no_prefix_by_default() -> None:
     fake_model = MagicMock()
     fake_model.encode.return_value = np.array([[0.0, 1.0]])
     fake_model.get_sentence_embedding_dimension.return_value = 2
     with patch(
-        "infrastructure.embedding.sentence_transformer.SentenceTransformer",
+        "infrastructure.embedding.SentenceTransformer",
         return_value=fake_model,
     ):
         model = SentenceTransformerEmbedding("fake-model")
@@ -91,14 +96,14 @@ def _make_cached_model(cache) -> tuple[SentenceTransformerEmbedding, MagicMock]:
     fake_model.encode.return_value = np.array([[0.0, 1.0]])
     fake_model.get_sentence_embedding_dimension.return_value = 2
     with patch(
-        "infrastructure.embedding.sentence_transformer.SentenceTransformer",
+        "infrastructure.embedding.SentenceTransformer",
         return_value=fake_model,
     ):
         return SentenceTransformerEmbedding("fake-model", query_cache=cache), fake_model
 
 
-async def test_query_cache_prevents_reencode():
-    from shared.caching import TTLCache
+async def test_query_cache_prevents_reencode() -> None:
+    from infrastructure.caching import TTLCache
 
     model, fake_model = _make_cached_model(TTLCache(maxsize=8, ttl=60))
 
@@ -109,8 +114,8 @@ async def test_query_cache_prevents_reencode():
     assert fake_model.encode.call_count == 1  # second call served from cache
 
 
-async def test_query_cache_partial_batch():
-    from shared.caching import TTLCache
+async def test_query_cache_partial_batch() -> None:
+    from infrastructure.caching import TTLCache
 
     model, fake_model = _make_cached_model(TTLCache(maxsize=8, ttl=60))
     await model.embed_query(["cached"])
@@ -122,12 +127,12 @@ async def test_query_cache_partial_batch():
     assert fake_model.encode.call_args.args == (["fresh"],)
 
 
-async def test_batch_size_passed_to_encode():
+async def test_batch_size_passed_to_encode() -> None:
     fake_model = MagicMock()
     fake_model.encode.return_value = np.array([[0.0, 1.0]])
     fake_model.get_sentence_embedding_dimension.return_value = 2
     with patch(
-        "infrastructure.embedding.sentence_transformer.SentenceTransformer",
+        "infrastructure.embedding.SentenceTransformer",
         return_value=fake_model,
     ):
         model = SentenceTransformerEmbedding("fake-model", batch_size=8)
@@ -136,9 +141,9 @@ async def test_batch_size_passed_to_encode():
     assert fake_model.encode.call_args.kwargs["batch_size"] == 8
 
 
-async def test_device_passed_to_model_constructor():
+async def test_device_passed_to_model_constructor() -> None:
     with patch(
-        "infrastructure.embedding.sentence_transformer.SentenceTransformer"
+        "infrastructure.embedding.SentenceTransformer"
     ) as ctor:
         ctor.return_value.get_sentence_embedding_dimension.return_value = 2
         SentenceTransformerEmbedding("fake-model", device="cuda")

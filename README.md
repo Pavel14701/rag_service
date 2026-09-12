@@ -1,310 +1,300 @@
-# RAG Service
+# Async RAG Service
 
-Асинхронный сервис **RAG** (Retrieval-Augmented Generation) на Python 3.12: принимает документы и вопросы пользователей через RabbitMQ, индексирует документы в векторную базу и отвечает на вопросы на основе проиндексированного контента — с проверкой прав доступа на уровне векторного поиска.
+A production-oriented, fully asynchronous **Retrieval-Augmented Generation (RAG)**
+service on Python 3.12. Documents and user questions travel through RabbitMQ;
+documents are parsed, chunked and embedded into Qdrant; questions are answered
+strictly from the retrieved context — with **access control enforced inside the
+vector search itself**.
 
-## Возможности
+Built as a Clean Architecture / Ports & Adapters backend: `domain` has zero
+knowledge of infrastructure, `application` services depend only on Protocol
+ports, `infrastructure` implements them, and a dishka DI container wires it all
+in a single composition root.
 
-- 📥 Индексация документов (Markdown, PDF, DOCX и др.) с чанкингом и эмбеддингами, OCR для сканов (`PDF_OCR_STRATEGY` / `PDF_OCR_LANGUAGES`)
-- 🔎 Векторный поиск с фильтрацией по правам доступа (владелец / группа доступа)
-- 🧩 Гибридный поиск: векторный + лексический BM25, слияние ранжированием RRF (`SEARCH_HYBRID=true`), graceful деградация в чисто векторный
-- 💬 Генерация ответов через LLM строго по найденному контексту (температура — `LLM_TEMPERATURE`), circuit breaker на LLM API; сменные провайдеры: DeepSeek (по умолчанию), любой OpenAI-совместимый endpoint (OpenAI, vLLM, Ollama), Anthropic (`LLM_PROVIDER`); per-request роутинг между провайдерами и моделями (`LLM_ENABLED_PROVIDERS`, поле `llm_provider`/`llm_model` в запросе) — лицензия MIT (`LICENSE`)
-- 🚀 Кэши: LLM-ответы и query-эмбеддинги в Redis (`REDIS_URL`) либо in-process TTL; недоступный Redis = cache miss, обработка не ломается
-- 🖼 Поддержка мультимодального контента: таблицы сохраняются с HTML-структурой, элементы тегируются (`type`: table / image / title)
-- 🏷 Маркер `embedding_model` в каждой точке Qdrant + предупреждение при старте о смене модели эмбеддингов (нужен переиндекс)
-- 📊 Offline-оценка качества RAG: precision@k / recall@k / MRR / NDCG / faithfulness, A/B-сравнение конфигураций (`src/evaluation/`, `scripts/run_eval.py`)
-- 🗑 Удаление документов (soft-delete + очистка векторов, опционально файла)
-- 🔄 Полный реиндекс коллекции (админ-операция) с логированием миграции версии эмбеддингов
-- 🔐 JWT-аутентификация каждого сообщения
-- ♻️ Retry с exponential backoff + DLX для ошибочных сообщений
-- 🏥 Health/metrics HTTP-сервер (liveness/readiness-пробы, Prometheus-метрики), трассировка OpenTelemetry
-- ⚙️ Разделение ролей воркеров (`WORKER_QUEUES=query|background|all`) для раздельного масштабирования
-- Полностью асинхронный воркер (asyncio + aio-pika), DI на dishka
+---
 
-## Стек
+## Features
 
-| Компонент | Технология |
+**Ingestion & indexing**
+- Markdown, PDF, DOCX and a universal `unstructured` fallback; OCR for scans
+  (`PDF_OCR_STRATEGY` / `PDF_OCR_LANGUAGES`) with a hard parse timeout
+  (`PARSE_TIMEOUT`) against hung tesseract processes
+- MIME validation via libmagic before parsing: an `.exe` renamed to `.pdf` is a
+  *permanent* failure, never an OCR hang
+- Deterministic chunk IDs (`uuid5`) + explicit per-document purge before upsert
+  → **no ghost chunks** after a document shrinks
+- Quality guards: tiny-chunk merging (`CHUNK_MIN_CHARS`), row-wise table
+  chunking with the header repeated in every chunk, HTML tables preserved
+  (`table_html`), element typing (`type`: table / image / title)
+- **Parent-Child retrieval** (opt-in): children are embedded, the LLM sees the
+  parent text; sibling hits are auto-merged
+
+**Retrieval & generation**
+- Hybrid search: dense vectors + lexical BM25 fused with RRF; graceful
+  degradation to pure vector search
+- BM25 noise guards: stop-word stripping and a score threshold for lexical
+  candidates; a similarity threshold and a character budget for the packed
+  context
+- Prompt-injection isolation: retrieved context is wrapped in `<context>` tags
+  and explicitly marked as untrusted data
+- Pluggable providers: DeepSeek (default), any OpenAI-compatible endpoint
+  (vLLM, Ollama, OpenAI, ...), Anthropic; per-request provider/model routing
+  with server-side allowlists
+- Optional **query rewriting** through the LLM (graceful fallback to the
+  original query)
+- Optional **semantic answer cache**: near-duplicate questions reuse a previous
+  answer without an LLM call (opt-in, see the ACL caveat in the settings)
+- Truncated answers (`finish_reason=length` / `stop_reason=max_tokens`) are
+  **never cached**; optional continuation requests merge the full answer
+
+**Reliability**
+- **Blue-Green reindex**: a shadow collection is built while search keeps
+  serving the live one; the collection alias flips atomically at the end
+- Distributed Redis lock (`SET NX EX` + compare-and-delete) serializes
+  concurrent indexing of the same document
+- Fail-fast startup check: embedding dimension vs collection config
+- Error taxonomy: `TransientError` → retry with exponential backoff;
+  `PermanentError` → Dead Letter Queue immediately; soft-deleted-invalid status
+  (`failed_invalid`) for bad input files
+- Idempotency on broker redeliveries (processed message ids remembered in
+  Redis)
+- Circuit breaker on every LLM provider; per-call pooled HTTP client with
+  keepalive (no socket exhaustion under burst)
+
+**Security**
+- JWT per message: algorithm allowlisting (anti algorithm-confusion), key
+  rotation without downtime (`*_PREVIOUS` keys), mandatory `exp`, revocation by
+  `jti` via in-memory or Redis blacklist
+- ACL enforced **inside Qdrant**: `owner_id == user OR access_group IN groups`
+  — unauthorized chunks never even reach the LLM
+- Optional PII redaction (`ANONYMIZE_CONVERSATIONS`) of questions/answers
+  before persistence (GDPR / ФЗ-152 friendly)
+
+**Observability & operations**
+- Prometheus metrics (queues, vector search, LLM latency/tokens/cache/truncations,
+  circuit breaker), OpenTelemetry tracing, structlog JSON logging
+- Health server: `/healthz`, `/readyz` (per-dependency checks), `/metrics`
+- Worker role split: `WORKER_QUEUES=query|background|all` for independent scaling
+- RabbitMQ reliability: per-queue DLX/DLQ, TTL retry queues with exponential
+  backoff, optional `x-max-length` + `reject-publish`
+
+**Quality**
+- Offline evaluation: precision@k, recall@k, MRR, NDCG, hit rate, faithfulness
+  (lexical heuristic or **LLM-as-a-judge**), refusal rate; A/B diffing of
+  configurations
+- 300+ tests with in-memory doubles (no DB/broker/Redis needed), mutation
+  testing via mutmut on the pure-logic modules, strict mypy on `src` **and**
+  `tests`, ruff (pydocstyle, pyflakes, naming, quotes, isort)
+
+---
+
+## Tech Stack
+
+| Component | Technology |
 |---|---|
 | Runtime | Python 3.12+, asyncio, [uv](https://docs.astral.sh/uv/) |
-| Брокер сообщений | RabbitMQ (aio-pika) |
-| Векторная БД | Qdrant |
-| Метаданные | PostgreSQL 15 + SQLAlchemy 2 (asyncio, asyncpg), миграции Alembic |
-| Файловое хранилище | MinIO (S3 API) |
-| Эмбеддинги | sentence-transformers, `intfloat/multilingual-e5-small` (384 dim) |
-| LLM | Сменные провайдеры: DeepSeek (`deepseek-chat`), OpenAI-совместимые API (vLLM, Ollama, ...), Anthropic Messages — `LLM_PROVIDER` |
-| Парсинг документов | unstructured (+ markdown / beautifulsoup4), OCR через tesseract |
-| Кэши | Redis (опционально) / in-process TTLCache |
+| Message broker | RabbitMQ (aio-pika) |
+| Vector DB | Qdrant (REST + optional gRPC with message-size caps) |
+| Metadata | PostgreSQL 16 + SQLAlchemy 2 (asyncpg), Alembic migrations, partial index for live rows |
+| File storage | MinIO (S3 API) |
+| Embeddings | sentence-transformers, `intfloat/multilingual-e5-small` (384 dim), query/passage prefixes, batch + query cache |
+| LLM | DeepSeek (`deepseek-chat`), any OpenAI-compatible API, Anthropic Messages — via `LLM_PROVIDER` |
+| Document parsing | unstructured (+ markdown / beautifulsoup4), OCR via tesseract, libmagic MIME checks |
+| Caches | Redis (optional, L2) / in-process TTL + semantic answer cache |
 | DI | dishka |
-| Конфигурация | pydantic-settings (`.env`) |
-| Наблюдаемость | Prometheus-метрики, structlog, OpenTelemetry |
-| Тесты | pytest + pytest-asyncio; мутационное тестирование mutmut (через WSL на Windows) |
+| Configuration | pydantic-settings (`.env`) |
+| Observability | Prometheus, structlog, OpenTelemetry (OTLP/HTTP) |
+| Testing | pytest + pytest-asyncio, mutmut; mypy `strict` (src + tests), ruff |
 
-## Архитектура
+---
+
+## Documentation
+
+Full documentation lives in [docs/](docs/index.md):
+
+| Page | Contents |
+|---|---|
+| [Architecture](docs/architecture.md) | layers, ports & adapters, request flows |
+| [Configuration](docs/configuration.md) | every environment variable, explained |
+| [Retrieval](docs/retrieval.md) | chunking, hybrid search, caching, prompt hardening |
+| [Reliability](docs/reliability.md) | retry/DLQ, idempotency, locks, blue-green reindex |
+| [Security](docs/security.md) | JWT lifecycle, ACL enforcement, PII redaction |
+| [Operations](docs/operations.md) | deployment, roles, maintenance, troubleshooting |
+| [Evaluation](docs/evaluation.md) | golden dataset, corpus, metrics, LLM-as-a-judge |
+| [Development](docs/development.md) | markers, lint/typing policy, adding features |
+
+---
+
+## Architecture
+
+A detailed walkthrough (ports & adapters table, request flows, DI) lives in
+[docs/architecture.md](docs/architecture.md). Overview:
 
 ```
-                  ┌──────────┐
-  API / продюсер ─►  RabbitMQ │
-                  └──────────┘
-        ┌──────────────┬───────────────┬────────────────┐
-        ▼              ▼               ▼                ▼
-  ingest_queue   query_queue    delete_queue    reindex_queue
-        │              │               │                │
-        ▼              ▼               ▼                ▼
-  IndexerService  RetrieverService   DocumentManager (delete / reindex)
-        │              │               │                │
-        ▼              ▼               ▼                ▼
-     MinIO ──► Qdrant ◄──────────────┴────────────────┘
-        │              │
-        ▼              ▼
-   PostgreSQL: documents, conversations
+                 ┌──────────┐
+  API / producer ─► RabbitMQ │
+                 └──────────┘
+       ┌──────────────┬───────────────┬────────────────┐
+       ▼              ▼               ▼                ▼
+ ingest_queue   query_queue    delete_queue    reindex_queue
+       │              │               │                │
+       ▼              ▼               ▼                ▼
+ IndexerService  RetrieverService   DocumentManager (delete / reindex)
+       │              │               │                │
+       ▼              ▼               ▼                ▼
+ parse+chunk    vector search    vectors purge      shadow build +
+ embed+upsert   + LLM (ACL       + file delete      alias flip
+ (Qdrant/MinIO)  filtered)                          (blue-green)
 ```
 
-Слои проекта:
-
-- `src/entrypoints` — консьюмеры RabbitMQ (retry + DLX), health/metrics-сервер: валидация JWT, диспетчеризация в сервисы
-- `src/application/services` — use-cases: `IndexerService`, `RetrieverService`, `DocumentManager`
-- `src/application/interfaces` — порты (Protocol): `VectorStore`, `FileStorage`, `DocumentRepository`, `EmbeddingModel`, `LLMGenerator`, `TokenValidator`
-- `src/domain` — сущности (`Document`, `Conversation`) и исключения
-- `src/infrastructure` — адаптеры: Qdrant, MinIO, Postgres, Redis, sentence-transformers, LLM-клиенты (DeepSeek / OpenAI-совместимый / Anthropic + circuit breaker), JWT, парсеры
-- `src/evaluation` — offline-оценка качества (метрики retrieval/faithfulness, golden-датасет, раннер A/B)
-- `src/shared` — гибридный поиск (BM25+RRF), кэши (TTL/Redis), circuit breaker, метрики, трассировка, логирование, хеширование
-- `src/container.py` — сборка графа зависимостей (dishka), `src/main.py` — запуск health-сервера и консьюмеров выбранной роли
-
-## Быстрый старт
-
-```bash
-# 1. Инфраструктура (RabbitMQ, PostgreSQL, Qdrant, MinIO)
-docker compose up -d
-
-# 2. Конфигурация
-cp .env.example .env
-# укажите минимум: DEEPSEEK_API_KEY и JWT_SECRET
-
-# 3. Зависимости (нужны Python 3.12+ и uv)
-uv sync
-
-# 4. Миграции БД
-uv run alembic upgrade head
-
-# 5. Запуск воркера
-uv run python src/main.py
-```
-
-Воркер подключится ко всем очередям и начнёт обрабатывать сообщения. Бакет MinIO (`documents`) создаётся автоматически при старте.
-
-### Порты инфраструктуры
-
-| Сервис | Порт | Примечание |
-|---|---|---|
-| RabbitMQ AMQP | 5672 | guest / guest |
-| RabbitMQ Management UI | 15672 | http://localhost:15672 |
-| PostgreSQL | 5432 | db / user / pass: `rag` / `rag` / `rag` |
-| Qdrant HTTP / gRPC | 6333 / 6334 | дашборд: http://localhost:6333/dashboard |
-| MinIO API / Console | 9000 / 9001 | minioadmin / minioadmin |
-| Redis | 6379 | кэши LLM-ответов и query-эмбеддингов |
-| Health / Metrics воркера | 8000 | `/healthz` (liveness), `/readyz` (readiness), `/metrics` (Prometheus) |
-
-## Миграции БД
-
-Схема (`documents`, `conversations`) управляется Alembic; миграции применяются автоматически одним из способов:
-
-- вручную: `uv run alembic upgrade head` (URL берётся из `POSTGRES_DSN` — env или `.env`);
-- в docker-compose: one-shot сервис `migrate` (`alembic upgrade head`) — оба воркера стартуют только после его успешного завершения.
-
-Новая миграция после изменения ORM-моделей:
-
-```bash
-uv run alembic revision --autogenerate -m "describe change"
-uv run alembic upgrade head          # проверьте сгенерированный DDL перед применением
-```
-
-Управление ACL-группами (таблица `user_groups`; используется фильтром доступа, если в JWT нет claim `groups`):
-
-```bash
-uv run python scripts/manage_groups.py set user-1 team-a,team-b
-uv run python scripts/manage_groups.py list user-1
-```
-
-Тесты (`tests/test_migrations.py`) прогоняют миграцию в offline-режиме и сверяют DDL с ORM-метаданными — расхождение схемы и миграций ломает тесты.
-
-## Роли воркеров
-
-docker-compose поднимает два воркера: `WORKER_QUEUES=query` (real-time ответы) и `WORKER_QUEUES=background` (индексация/удаление/реиндекс). Значение `all` запускает все очереди в одном процессе (удобно для разработки).
-
-## Конфигурация
-
-Переменные читаются из `.env` и окружения (полный список — в `.env.example`):
-
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672/` | подключение к RabbitMQ |
-| `QDRANT_HOST` / `QDRANT_PORT` | `localhost` / `6333` | векторная БД |
-| `POSTGRES_DSN` | `postgresql+asyncpg://rag:rag@localhost:5432/rag` | метаданные |
-| `MINIO_ENDPOINT` | `localhost:9000` | S3-хранилище |
-| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | `minioadmin` | ключи MinIO |
-| `MINIO_BUCKET` | `documents` | бакет с исходными файлами |
-| `LLM_PROVIDER` | `deepseek` | провайдер генерации по умолчанию: `deepseek`, `openai` (любой OpenAI-совместимый API — vLLM, Ollama, ...), `anthropic` |
-| `LLM_ENABLED_PROVIDERS` | — | comma-список провайдеров, доступных для per-request роутинга (пусто = только провайдер по умолчанию). Ключи всех включённых провайдеров обязательны при старте |
-| `LLM_ALLOWED_MODELS` | — | comma-список моделей, которые запрос может явно запросить через `llm_model` (пусто = любые модели включённых провайдеров). Ограничивайте в мультитенанте (контроль расходов) |
-| `LLM_MODEL` | — | переопределение модели провайдера (`deepseek-chat` / `gpt-4o-mini` / `claude-3-5-haiku-latest` по умолчанию) |
-| `LLM_MAX_TOKENS` | `500` | лимит токенов ответа |
-| `DEEPSEEK_API_KEY` | — | ключ DeepSeek API (обязателен при `LLM_PROVIDER=deepseek`) |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | базовый URL LLM API |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | — / `https://api.openai.com/v1` | доступ при `LLM_PROVIDER=openai` (base_url — для vLLM/Ollama и др.) |
-| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | — / `https://api.anthropic.com` | доступ при `LLM_PROVIDER=anthropic` |
-| `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | модель эмбеддингов |
-| `COLLECTION_NAME` | `documents` | коллекция Qdrant |
-| `JWT_ALGORITHM` | `HS256` | алгоритм JWT: `HS256/384/512` (симметричные) или `RS256/384/512`, `ES256` (асимметричные) |
-| `JWT_SECRET` | при HS* | секрет для HS*-алгоритмов |
-| `JWT_SECRET_PREVIOUS` | — | предыдущий секрет на время ротации (принимается без даунтайма) |
-| `JWT_PUBLIC_KEY` / `JWT_PUBLIC_KEY_PREVIOUS` | при RS*/ES* | публичный ключ (PEM) для проверки; «previous» — для ротации |
-| `JWT_PRIVATE_KEY` | — | приватный ключ (PEM) для выпуска токенов (`JWTSigner`) в auth-сервисе |
-| `JWT_ISSUER` / `JWT_AUDIENCE` | — | при заданных значениях токены обязаны иметь совпадающие `iss` / `aud` |
-| `ANONYMIZE_CONVERSATIONS` | `false` | редакция PII (email, телефоны, карты, IBAN, ключи) перед записью в `conversations` |
-| `MINIO_SECURE` | `false` | HTTPS для MinIO |
-| `QDRANT_HTTPS` / `QDRANT_API_KEY` | `false` / — | HTTPS и API-ключ для Qdrant |
-| `LOG_LEVEL` | `INFO` | уровень логирования |
-| `WORKER_QUEUES` | `all` | роли воркера: `query` / `background` / `all` |
-| `METRICS_PORT` | `8000` | порт health/metrics-сервера |
-| `LLM_TEMPERATURE` | `0.1` | температура генерации |
-| `LLM_CIRCUIT_FAILURE_THRESHOLD` / `LLM_CIRCUIT_RESET_TIMEOUT` | `5` / `60` | circuit breaker на LLM API |
-| `REDIS_URL` | — | Redis для кэшей; не задан → in-process TTLCache |
-| `REDIS_CACHE_PREFIX` | `rag` | префикс ключей Redis |
-| `SEARCH_HYBRID` | `false` | гибридный поиск (BM25 + RRF поверх векторного) |
-| `SEARCH_HYBRID_RRF_K` / `SEARCH_HYBRID_CANDIDATES` | `60` / `50` | параметры RRF и лимит лексических кандидатов |
-| `PDF_OCR_STRATEGY` | `auto` | стратегия unstructured: `auto`/`hi_res`/`ocr_only`/`fast` |
-| `PDF_OCR_LANGUAGES` | `eng` | языки tesseract через запятую (напр. `eng,rus`) |
-| `EMBEDDING_QUERY_PREFIX` / `EMBEDDING_PASSAGE_PREFIX` | `query: ` / `passage: ` | префиксы e5-моделей |
-| `QDRANT_HNSW_M` / `QDRANT_HNSW_EF_CONSTRUCT` / `QDRANT_HNSW_EF` | — | тюнинг HNSW (None = дефолты сервера) |
-| `POSTGRES_READ_DSN` | — | опциональная read-реплика для запросов |
-| `OTEL_ENDPOINT` | — | exporter OTLP (трассировка) |
-
-## Очереди и формат сообщений
-
-Все сообщения — JSON. Каждый запрос содержит `token` — JWT (алгоритм настраивается `JWT_ALGORITHM`; по умолчанию HS256 с `JWT_SECRET`, рекомендуется RS256/ES256 с парой ключей), в claim `sub` — ID пользователя. Сообщения с невалидным токеном или недостатком прав отклоняются.
-
-## Безопасность
-
-**JWT-аутентификация**
-- Проверка токена: фиксированный список алгоритмов + явная проверка `alg`-заголовка (защита от algorithm-confusion), обязательный `exp`, опциональные `iss`/`aud` (`JWT_ISSUER`/`JWT_AUDIENCE` — включайте для многосервисных окружений).
-- **Ротация ключей без даунтайма**: валидатор принимает текущий и предыдущий ключ (`JWT_SECRET` + `JWT_SECRET_PREVIOUS`, аналогично для публичных ключей). Процедура: добавить новый ключ → перевыпускать токены новым → убрать старый из ротации после истечения максимального TTL.
-- **Отзыв токенов**: выпущенные токены содержат `jti`. При настроенном `REDIS_URL` валидатор проверяет blacklist (`RedisTokenBlacklist`, ключ `rag:revoked-jti:<jti>` с TTL до истечения токена) — украденный токен отзывается мгновенно. Без Redis используйте `InMemoryTokenBlacklist` (один процесс).
-- Для выпуска токенов используйте `infrastructure/security/jwt_signer.py::JWTSigner` (заполняет `jti`/`iat`/`exp`/`iss`/`aud`/`groups`).
-- Рекомендуется асимметричная схема (RS256): приватный ключ хранится только в auth-сервисе, воркеры проверяют подпись публичным ключом.
-
-**Контроль доступа к векторам**
-- Фильтр поиска — OR (`should`): `owner_id == user` **ИЛИ** `access_group ∈ groups пользователя`. Владелец сохраняет доступ к своим документам, даже не состояя в группе документа. Фильтр применяется на уровне Qdrant, до генерации ответа.
-- Проверки владельца дублируются на уровне сервисов (`IngestConsumer`, `DocumentManager`).
-
-**Шифрование и приватность**
-- **Транзит**: RabbitMQ — используйте `amqps://` в `RABBITMQ_URL`; MinIO — `MINIO_SECURE=true`; Qdrant — `QDRANT_HTTPS=true` (+ `QDRANT_API_KEY`); внешние LLM API вызываются по HTTPS.
-- **Персональные данные**: `ANONYMIZE_CONVERSATIONS=true` маскирует email/телефоны/карты/IBAN/API-ключи в `query` и `response` до записи в Postgres (модуль `shared/pii.py`).
-- **At rest**: включите шифрование на уровне томов/дисков (LUKS, BitLocker, cloud-диски с encryption-at-rest) для `pg_data`, `minio_data`, `qdrant_storage`; в MinIO доступно server-side encryption (SSE-S3/KMS), в Postgres — шифрование файловой системы или `pgcrypto` для отдельных колонок.
-
-| Очередь | Назначение | Payload |
-|---|---|---|
-| `ingest_queue` | проиндексировать документ | `token`, `doc_id` (UUID) |
-| `query_queue` | ответить на вопрос (RAG) | `token`, `query`, `query_id?`, `conversation_id?` |
-| `delete_queue` | удалить документ | `token`, `doc_id`, `remove_file?` (по умолчанию `false`) |
-| `reindex_queue` | пересобрать коллекцию | `token`, `vector_dimension?` |
-
-Пример публикации:
-
-```python
-import json
-import uuid
-
-import aio_pika
-
-
-async def main() -> None:
-    conn = await aio_pika.connect_robust("amqp://guest:guest@localhost:5672/")
-    async with conn:
-        ch = await conn.channel()
-        await ch.default_exchange.publish(
-            aio_pika.Message(
-                body=json.dumps({
-                    "token": make_jwt(user_id="user-1"),  # ваш HS256-токен с claim `sub`
-                    "doc_id": str(uuid.uuid4()),
-                }).encode()
-            ),
-            routing_key="ingest_queue",
-        )
-```
-
-## Как это работает
-
-**Индексация** (`ingest_queue`): проверяется, что запрашивающий — владелец документа → файл скачивается из MinIO во временный каталог → парсится подходящим парсером (`ParserFactory`: `.md`, `.pdf`, `.docx`, остальное — unstructured auto; для PDF — выбранная OCR-стратегия) → текст режется на чанки (~512 символов, по границам слов) → каждому чанку присваивается детерминированный UUID (`uuid5` от `doc_id:idx:chunk_idx` — повторная индексация обновляет точки, а не дублирует) → эмбеддинги (`passage: `-префикс) → upsert в Qdrant с payload `{text, doc_id, owner_id, access_group, page, header, type, table_html?, embedding_model}` → статус в Postgres: `pending → indexed` (или `failed`).
-
-**Ответ на вопрос** (`query_queue`): вопрос эмбеддируется (с `query: `-префиксом; эмбеддинги кэшируются) → гибридный поиск по Qdrant: векторный top_k с фильтром доступа (`owner_id == user` ИЛИ `access_group` ∈ групп пользователя; группы берутся из JWT-claim `groups`, иначе из таблицы `user_groups` в Postgres) + при `SEARCH_HYBRID=true` лексические кандидаты (full-text индекс по `text`) с BM25-ранжированием и RRF-слиянием → чанки собираются в контекст → LLM (провайдер по умолчанию `LLM_PROVIDER`, либо per-request `llm_provider`/`llm_model` из сообщения при включённом `LLM_ENABLED_PROVIDERS`; `LLM_TEMPERATURE`, кэш ответов, circuit breaker) генерирует ответ строго по контексту → вопрос, ответ и источники сохраняются в `conversations`, а результат публикуется продюсеру: в очередь из `reply_to` входящего сообщения (RPC-паттерн, `correlation_id` сохраняется) либо в общую `query_reply_queue`.
-
-**Удаление** (`delete_queue`): только владелец → удаление векторов документа из Qdrant → (опционально) удаление файла из MinIO → soft-delete в Postgres.
-
-**Реиндекс** (`reindex_queue`): только админ (группа `admin` или `user_id` с префиксом `admin_`) → коллекция Qdrant пересоздаётся (с HNSW-настройками и full-text индексом при гибриде) → все активные документы индексируются заново с текущим маркером `embedding_model` (ошибка отдельного документа не прерывает процесс).
-
-**Смена модели эмбеддингов**: при старте воркер сравнивает `EMBEDDING_MODEL` с маркером в существующей коллекции и при рассинхроне логирует предупреждение о необходимости реиндекса (безопаснее явной команды, чем автоматический drop).
-
-**Оценка качества** (offline): golden-датасет с релевантными документами прогоняется через `RetrieverService`, агрегируются precision@k / recall@k / MRR / NDCG / faithfulness / refusal rate; `compare_reports()` даёт дельты двух конфигураций для A/B (например, гибрид on/off):
-
-```bash
-PYTHONPATH=src python scripts/run_eval.py --dataset eval/golden_dataset.json --json-out report.json
-```
-
-## Тесты
-
-```bash
-uv run pytest
-```
-
-Покрытие: сервисы (indexer / retriever / document manager), консьюмеры, конвертация фильтров Qdrant, гибридный поиск (BM25/RRF/full-text индекс), кэши (TTL + Redis), circuit breaker, offline-evaluation (метрики, датасет, раннер), мультимодальные payload'ы (тип элемента, таблицы), маркер версии эмбеддингов, JWT, парсеры (вкл. OCR-конфигурацию), ORM-маппинг, хеширование. Внешние зависимости заменены in-memory double'ами (`tests/conftest.py`) — БД, брокер и Redis для тестов не нужны.
-
-> Тесты парсеров PDF/DOCX/unstructured автоматически помечаются `skip`, если в системе недоступен `libmagic`/`unstructured` (типично для чистой Windows; на Linux обычно установлен).
-
-Мутационное тестирование (оценка качества самих тестов):
-
-```bash
-uv run mutmut run   # на Windows — только через WSL (native support: boxed/mutmut#397)
-```
-
-## Структура проекта
+### Layers
 
 ```
 src/
-├── main.py                    # health-сервер + консьюмеры выбранной роли
-├── config.py                  # Settings (pydantic-settings)
-├── container.py               # dishka-провайдеры
+├── domain/                     # entities, error taxonomy, PII policy (zero deps)
+│   ├── model.py                #   Document, Conversation, DocStatus, exceptions
+│   └── pii.py                  #   redact_pii (pure regex policies)
 ├── application/
-│   ├── interfaces/            # порты (Protocol)
-│   └── services/              # indexer, retriever, document_manager
-├── domain/
-│   ├── entities/              # Document, Conversation
-│   └── exceptions.py
-├── entrypoints/               # base_consumer (retry+DLX), 4 консьюмера, health-сервер
-├── evaluation/                # offline-оценка качества: metrics, dataset, runner
-├── infrastructure/
-│   ├── embedding/             # sentence-transformers (+ префиксы e5, батчи)
-│   ├── file_storage/          # MinIO
-│   ├── llm/                   # LLM-клиенты: OpenAI-совместимый (DeepSeek как специализация) и Anthropic (+ circuit breaker)
-│   ├── parsing/               # markdown / pdf (OCR) / docx / unstructured + фабрика
-│   ├── repositories/          # Postgres (read-реплика) + ORM-модели
-│   ├── security/              # JWT
-│   └── vector_store/          # Qdrant (+ гибрид, HNSW, scroll)
-└── shared/                    # hybrid (BM25+RRF), caching (TTL/Redis), circuit_breaker,
-                               # metrics (Prometheus), tracing (OTel), logging, hashing
-alembic.ini                    # конфигурация Alembic
-migrations/                    # env.py (async) + версии миграций
-eval/golden_dataset.json       # golden-датасет для оценки качества
-scripts/run_eval.py            # CLI запуска offline-evaluation
-tests/                         # pytest, double'ы в conftest.py
+│   ├── interfaces.py           # ALL ports (Protocols): repository, vector store,
+│   │                           #   embeddings, LLM, parser, selector, lock, caches
+│   └── services.py             # IndexerService, RetrieverService, DocumentManager
+├── infrastructure/             # adapters implementing the ports
+│   ├── caching.py              #   TTLCache / RedisCache (LLM answers, embeddings)
+│   ├── resilience.py           #   circuit breaker + distributed locks (Redis)
+│   ├── observability.py        #   structlog config, Prometheus metrics, OTel tracing
+│   ├── embedding.py            #   sentence-transformers (prefixes, batching, cache)
+│   ├── llm.py                  #   OpenAI-compatible / Anthropic / DeepSeek + router
+│   │                           #   + query rewriter (+ shared truncation-safe pipeline)
+│   ├── vector_store.py         #   Qdrant adapter + BM25/RRF hybrid + blue-green
+│   ├── parsing.py              #   markdown / pdf(OCR) / docx / unstructured + selector
+│   ├── repositories.py         #   PostgreSQL (read replica support) + ORM models
+│   ├── file_storage.py         #   MinIO + hashing
+│   ├── security.py             #   JWT signer / validator / blacklists
+│   └── observability.py        #   logging + metrics + tracing
+├── entrypoints/
+│   ├── consumers.py            # base consumer (retry/DLX/idempotency) + 4 handlers
+│   ├── health.py               # /healthz /readyz /metrics
+│   └── main.py                 # bootstrap: logging, tracing, fail-fast checks
+├── config.py                   # pydantic-settings
+├── container.py                # dishka composition root
+├── alembic.ini
+├── migrations/                 # async env.py + revisions (partial index, …)
+├── eval/
+│   ├── corpus/*.md             # eval document corpus (deterministic ids)
+│   └── golden_dataset.json     # golden eval dataset (15 cases)
+├── scripts/
+│   ├── run_eval.py             # offline evaluation CLI (--llm-judge)
+│   └── index_eval_corpus.py    # indexes eval/corpus with stable doc ids
+│   ├── manage_groups.py        # ACL group management CLI
+│   └── purge_deleted_documents.py  # hard-delete soft-deleted rows (cron)
+└── tests/                      # pytest suite, in-memory doubles in conftest
 ```
 
-## Известные ограничения
+---
 
-- **Один LLM-клиент на (провайдер, модель)**: per-request роутинг реализован через `LLM_ENABLED_PROVIDERS` + поля `llm_provider`/`llm_model` в запросе; инстансы клиентов кэшируются лениво по комбинации (провайдер, модель) — при большом разнообразии моделей в `LLM_ALLOWED_MODELS` растёт число объектов-клиентов (лёгкие обёртки, без постоянных соединений).
-- Для реального OCR (`ocr_only`/`hi_res` на сканах) требуются `tesseract` и `poppler` в образе воркера.
-- `faithfulness` в evaluation — лексическая эвристика (n-граммное перекрытие с источниками), а не семантический судья; для строгой оценки подключите LLM-as-judge.
-- mutmut на Windows запускается только через WSL.
-- Golden-датасет (`eval/golden_dataset.json`) — образец с placeholder-идентификаторами; наполните реальными кейсами по вашим документам.
+## Configuration Highlights
 
-## Лицензия
+Full reference: [docs/configuration.md](docs/configuration.md).
+The most important variables:
 
-MIT — см. [LICENSE](LICENSE).
+| Variable | Default | Purpose |
+|---|---|---|
+| `WORKER_QUEUES` | `all` | `query` / `background` / `all` role split |
+| `LLM_PROVIDER` | `deepseek` | `deepseek` \| `openai` \| `anthropic` |
+| `LLM_ENABLED_PROVIDERS` | `LLM_PROVIDER` | per-request routing allowlist |
+| `LLM_ALLOWED_MODELS` | *(empty = any)* | model allowlist (cost control) |
+| `LLM_MAX_TOKENS` / `LLM_TEMPERATURE` | `500` / `0.1` | generation limits |
+| `LLM_CONTINUE_ON_TRUNCATION` | `false` | merge follow-ups when cut by `max_tokens` |
+| `SEARCH_HYBRID` | `false` | BM25 + RRF fusion |
+| `SEARCH_HYBRID_STOPWORDS` | *(empty)* | stop words stripped from the lexical query |
+| `SEARCH_BM25_SCORE_THRESHOLD` | `0.0` | lexical noise gate |
+| `SEARCH_SCORE_THRESHOLD` | `0.0` | vector similarity gate |
+| `SEARCH_CONTEXT_MAX_CHARS` | `12000` | LLM context character budget |
+| `PARENT_CHILD_CHILD_CHARS` | `0` | Parent-Child retrieval (children size) |
+| `QUERY_REWRITE_ENABLED` | `false` | LLM query rewriting before search |
+| `SEMANTIC_CACHE_ENABLED` | `false` | near-duplicate answer reuse (see ACL note) |
+| `REINDEX_BLUE_GREEN` | `true` | shadow collection + atomic alias flip |
+| `CHUNK_MIN_CHARS` | `0` | merge tiny text chunks |
+| `PARSE_TIMEOUT` | `300.0` | hard parse/OCR time budget (seconds) |
+| `PARSE_VALIDATE_MIME` | `true` | magic-bytes vs extension check |
+| `INDEX_LOCK_TTL` | `300.0` | distributed ingest lock TTL (seconds) |
+| `REDIS_URL` | *(empty)* | enables L2 caches, locks, idempotency, JWT blacklist |
+| `QUEUE_MAX_LENGTH` | `0` | RabbitMQ `x-max-length` cap (0 = unlimited) |
+| `ANONYMIZE_CONVERSATIONS` | `false` | PII redaction before persistence |
+| `JWT_ALGORITHM` / `JWT_SECRET` / `JWT_PUBLIC_KEY` | `HS256` | signing / verification |
+| `OTEL_ENDPOINT` | *(empty)* | OTLP/HTTP tracing export |
+
+---
+
+## Evaluation
+
+The golden dataset pairs each question with the corpus files that must be
+retrieved. The corpus lives in `eval/corpus/*.md` (a small but coherent
+fictional company handbook); document ids are deterministic, so the
+dataset references real ids out of the box.
+
+Index the corpus once (MinIO/Qdrant/Postgres must be up):
+
+```bash
+PYTHONPATH=src uv run python scripts/run_eval.py \
+    --dataset eval/golden_dataset.json --json-out report.json
+
+# semantic faithfulness judged by the LLM (falls back to the lexical
+# heuristic when the judge call fails):
+PYTHONPATH=src uv run python scripts/run_eval.py \
+    --dataset eval/golden_dataset.json --llm-judge
+```
+
+`compare_reports(baseline, variant)` produces per-metric deltas for A/B runs
+(e.g. hybrid on/off, different chunk sizes, providers).
+
+---
+
+## Development
+
+Tests are marked by type; run subsets with `-m`:
+
+```bash
+uv run pytest                                 # full suite (in-memory doubles)
+uv run pytest -m retrieval                    # search quality only
+uv run pytest -m "llm"                        # provider clients & routing
+uv run pytest -m "not consumers"              # everything except consumers
+```
+
+Markers: `indexing`, `retrieval`, `llm`, `consumers`, `parsing`, `security`,
+`evaluation`, `observability`, `infra` (registered in `pyproject.toml`,
+enforced via `--strict-markers`).
+
+```bash
+uv run ruff check src tests scripts           # lint (E,F,Q,D,N)
+uv run ruff format --check src tests scripts  # formatting (79 cols, single quotes)
+uv run mypy src tests                         # strict typing, src + tests
+uv run mutmut run                             # mutation testing (WSL on Windows)
+```
+
+Maintenance scripts:
+
+```bash
+uv run python scripts/manage_groups.py set <user_id> group1,group2
+uv run python scripts/purge_deleted_documents.py --days 30 --apply
+```
+
+---
+
+## Known Limitations
+
+- Real OCR (`ocr_only` / `hi_res`) requires `tesseract` + `poppler` in the
+  worker image. `PARSE_TIMEOUT` cancels the *await*; the executor thread itself
+  needs a process-level cap in hardened deployments.
+- The semantic answer cache is in-process and opt-in: in multi-tenant setups a
+  cached answer was generated under a specific user's ACL — enable only when
+  that is acceptable.
+- LLM client instances are cached lazily per (provider, model); the model
+  allowlist keeps that set bounded.
+- The golden dataset covers the bundled `eval/corpus` handbook; extend it with
+  cases from your own documents as they accumulate.
+- mutmut on Windows requires WSL.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

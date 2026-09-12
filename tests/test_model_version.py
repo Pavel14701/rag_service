@@ -1,13 +1,10 @@
+from pathlib import Path
+
 """Tests for the embedding-model version marker and migration reindexing."""
 
-import asyncio
-
 import pytest
-import infrastructure.parsing.factory as parsing_factory
-from infrastructure.parsing.factory import ParserFactory
 
-from application.services.document_manager import DocumentManager
-from application.services.indexer import IndexerService
+from application.services import DocumentManager, IndexerService
 
 from conftest import (
     FakeDocumentRepository,
@@ -17,35 +14,47 @@ from conftest import (
     make_document,
 )
 
+pytestmark = pytest.mark.indexing
+
 
 class FakeParser:
-    def parse(self, file_path):
+    def parse(self, file_path: Path):
         return [{"text": "hello world", "metadata": {}}]
 
 
-def _setup(monkeypatch, version=None):
+class FakeSelector:
+    """ParserSelector stub returning a canned parser."""
+
+    def get_parser(self, file_path: Path):
+        return FakeParser()
+
+
+def _setup(version: str | None = None):
     repo = FakeDocumentRepository()
     storage = FakeFileStorage()
     vector_store = FakeVectorStore()
     embedding = FakeEmbedding()
-    if version is not None:
-        indexer = IndexerService(storage, vector_store, repo, embedding, embedding_version=version)
-    else:
-        indexer = IndexerService(storage, vector_store, repo, embedding)
-    if monkeypatch is not None:
-        monkeypatch.setattr(
-            parsing_factory.ParserFactory, "get_parser", staticmethod(lambda p: FakeParser())
-        )
+    indexer = IndexerService(
+        storage,
+        vector_store,
+        repo,
+        embedding,
+        FakeSelector(),
+        embedding_version=version,
+    )
     return repo, storage, vector_store, embedding, indexer
 
 
-def _manager(vector_store, repo, indexer, embedding, model_name):
-    return DocumentManager(None, vector_store, repo, indexer, embedding, model_name)
+def _manager(vector_store: FakeVectorStore, repo: FakeDocumentRepository, indexer: IndexerService, embedding: FakeEmbedding, model_name: str | None):
+    return DocumentManager(
+        None,  # type: ignore[arg-type]
+        vector_store, repo, indexer, embedding, model_name,
+    )
 
 
-async def test_indexer_stamps_embedding_model_version(monkeypatch):
+async def test_indexer_stamps_embedding_model_version() -> None:
     repo, storage, vector_store, embedding, indexer = _setup(
-        monkeypatch, version="e5-large-v2"
+        version="e5-large-v2"
     )
     doc = make_document()
     await repo.save(doc)
@@ -56,8 +65,8 @@ async def test_indexer_stamps_embedding_model_version(monkeypatch):
     assert payload["embedding_model"] == "e5-large-v2"
 
 
-async def test_indexer_without_version_has_no_marker(monkeypatch):
-    repo, storage, vector_store, embedding, indexer = _setup(monkeypatch, version=None)
+async def test_indexer_without_version_has_no_marker() -> None:
+    repo, storage, vector_store, embedding, indexer = _setup(version=None)
     doc = make_document()
     await repo.save(doc)
 
@@ -66,7 +75,7 @@ async def test_indexer_without_version_has_no_marker(monkeypatch):
     assert "embedding_model" not in vector_store.upserts[0]["payloads"][0]
 
 
-async def test_check_embedding_version_reads_marker_from_points():
+async def test_check_embedding_version_reads_marker_from_points() -> None:
     vector_store = FakeVectorStore()
     vector_store.upserts.append(
         {"ids": ["p1"], "vectors": [[0.0]], "payloads": [{"text": "t", "embedding_model": "e5-v1"}]}
@@ -74,7 +83,13 @@ async def test_check_embedding_version_reads_marker_from_points():
     manager = _manager(
         vector_store,
         FakeDocumentRepository(),
-        IndexerService(FakeFileStorage(), vector_store, FakeDocumentRepository(), FakeEmbedding()),
+        IndexerService(
+            FakeFileStorage(),
+            vector_store,
+            FakeDocumentRepository(),
+            FakeEmbedding(),
+            FakeSelector(),
+        ),
         FakeEmbedding(),
         "e5-v2",
     )
@@ -83,7 +98,7 @@ async def test_check_embedding_version_reads_marker_from_points():
     assert (await manager.needs_reindex()) is True
 
 
-async def test_needs_reindex_false_when_same_model():
+async def test_needs_reindex_false_when_same_model() -> None:
     vector_store = FakeVectorStore()
     vector_store.upserts.append(
         {"ids": ["p1"], "vectors": [[0.0]], "payloads": [{"text": "t", "embedding_model": "e5"}]}
@@ -91,18 +106,30 @@ async def test_needs_reindex_false_when_same_model():
     manager = _manager(
         vector_store,
         FakeDocumentRepository(),
-        IndexerService(FakeFileStorage(), vector_store, FakeDocumentRepository(), FakeEmbedding()),
+        IndexerService(
+            FakeFileStorage(),
+            vector_store,
+            FakeDocumentRepository(),
+            FakeEmbedding(),
+            FakeSelector(),
+        ),
         FakeEmbedding(),
         "e5",
     )
     assert (await manager.needs_reindex()) is False
 
 
-async def test_needs_reindex_false_when_collection_empty():
+async def test_needs_reindex_false_when_collection_empty() -> None:
     manager = _manager(
         FakeVectorStore(),
         FakeDocumentRepository(),
-        IndexerService(FakeFileStorage(), FakeVectorStore(), FakeDocumentRepository(), FakeEmbedding()),
+        IndexerService(
+            FakeFileStorage(),
+            FakeVectorStore(),
+            FakeDocumentRepository(),
+            FakeEmbedding(),
+            FakeSelector(),
+        ),
         FakeEmbedding(),
         "e5",
     )
@@ -111,10 +138,10 @@ async def test_needs_reindex_false_when_collection_empty():
     assert (await manager.needs_reindex()) is False
 
 
-async def test_reindex_all_detects_model_migration(monkeypatch, capsys):
+async def test_reindex_all_detects_model_migration() -> None:
     """Admin reindex over a collection built by an older model works."""
     repo, storage, vector_store, embedding, indexer = _setup(
-        monkeypatch, version="new-model"
+        version="new-model"
     )
     doc = make_document()
     await repo.save(doc)
@@ -129,18 +156,26 @@ async def test_reindex_all_detects_model_migration(monkeypatch, capsys):
     await manager.reindex_all("admin_1")
 
     # Collection was dropped and recreated, docs re-indexed with the new marker
-    assert vector_store.dropped == 1
+    assert vector_store.dropped == 0  # blue-green: no live drop
+    assert vector_store.promoted == 1
+    assert vector_store.optimize_calls == 1
     assert len(vector_store.created_dimensions) == 1
     assert vector_store.upserts[-1]["payloads"][0]["embedding_model"] == "new-model"
 
 
-async def test_reindex_all_requires_admin():
-    from domain.exceptions import PermissionDeniedError
+async def test_reindex_all_requires_admin() -> None:
+    from domain.model import PermissionDeniedError
 
     manager = _manager(
         FakeVectorStore(),
         FakeDocumentRepository(),
-        IndexerService(FakeFileStorage(), FakeVectorStore(), FakeDocumentRepository(), FakeEmbedding()),
+        IndexerService(
+            FakeFileStorage(),
+            FakeVectorStore(),
+            FakeDocumentRepository(),
+            FakeEmbedding(),
+            FakeSelector(),
+        ),
         FakeEmbedding(),
         "e5",
     )

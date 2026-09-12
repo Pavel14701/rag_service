@@ -30,19 +30,32 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.44.0",
     "redis>=8.1.0",
     "alembic>=1.19.2",
+    "orjson>=3.12.0",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "--strict-markers"
+markers = [
+    "indexing: document parsing, chunking and indexing (incl. blue-green reindex)",
+    "retrieval: search quality - hybrid BM25/RRF, filters, semantic cache, rewriting",
+    "llm: LLM provider clients, routing, truncation handling",
+    "consumers: RabbitMQ consumers (retry/DLX/idempotency/replies)",
+    "parsing: document parsers (unstructured-dependent tests auto-skip)",
+    "security: JWT signing/validation and PII redaction",
+    "evaluation: offline RAG quality metrics",
+    "observability: metrics, tracing, health endpoints",
+    "infra: caches, circuit breaker, locks, repositories, migrations",
+]
 
 [tool.mutmut]
 # Mutation testing for the core pure-logic modules (run: uv run mutmut run).
 paths_to_mutate = [
-    "src/shared/hybrid.py",
-    "src/shared/caching.py",
-    "src/shared/circuit_breaker.py",
+    "src/infrastructure/vector_store.py",
+    "src/infrastructure/caching.py",
+    "src/infrastructure/resilience.py",
     "src/evaluation/metrics.py",
 ]
 tests_dir = ["tests"]
@@ -53,6 +66,7 @@ dev = [
     "mypy>=2.3.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "types-markdown>=3.10.2.20260712",
 ]
 
 [tool.ruff]
@@ -137,4 +151,29 @@ explicit_package_bases = true
 namespace_packages = true
 mypy_path = "src"
 strict = true
-exclude = "tests/|test_.*\\.py"
+# tests are type-checked: bodies of untyped test functions are
+# analyzed too (check_untyped_defs), only full annotation strictness
+# is relaxed for fixtures/helpers
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+warn_return_any = false
+disable_error_code = [
+    "union-attr",
+    "index",
+    "var-annotated",
+    "untyped-decorator",
+    "type-arg",
+    "assignment",
+    "method-assign",
+    "misc",
+    "attr-defined",
+    "no-untyped-call",
+    "comparison-overlap",
+    "operator",
+    "no-any-return",
+]
+

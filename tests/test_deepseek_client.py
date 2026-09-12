@@ -4,7 +4,9 @@ import httpx
 import pytest
 from prometheus_client import REGISTRY
 
-from infrastructure.llm.deepseek_client import DeepSeekClient
+from infrastructure.llm import DeepSeekClient
+
+pytestmark = pytest.mark.llm
 
 
 def _client(handler) -> DeepSeekClient:
@@ -25,7 +27,7 @@ def _ok_response() -> httpx.Response:
     )
 
 
-async def test_generate_returns_content_and_records_tokens():
+async def test_generate_returns_content_and_records_tokens() -> None:
     client = _client(lambda request: _ok_response())
     before_prompt = metric("rag_llm_tokens_total", kind="prompt")
     before_completion = metric("rag_llm_tokens_total", kind="completion")
@@ -39,14 +41,14 @@ async def test_generate_returns_content_and_records_tokens():
     )
 
 
-async def test_generate_records_latency_histogram():
+async def test_generate_records_latency_histogram() -> None:
     client = _client(lambda request: _ok_response())
     before = metric("rag_llm_generation_seconds_count")
     await client.generate("s", "u")
     assert metric("rag_llm_generation_seconds_count") == before + 1
 
 
-async def test_generate_error_raises_runtime_error():
+async def test_generate_error_raises_runtime_error() -> None:
     client = _client(
         lambda request: httpx.Response(500, text="server error")
     )
@@ -64,8 +66,8 @@ def _counting_client(calls: list[int], cache=None) -> DeepSeekClient:
     )
 
 
-async def test_cache_hit_skips_http_call():
-    from shared.caching import TTLCache
+async def test_cache_hit_skips_http_call() -> None:
+    from infrastructure.caching import TTLCache
     from prometheus_client import REGISTRY
 
     calls: list[int] = []
@@ -83,8 +85,8 @@ async def test_cache_hit_skips_http_call():
     assert hits >= 1 and misses >= 1
 
 
-async def test_cache_respects_temperature_in_key():
-    from shared.caching import TTLCache
+async def test_cache_respects_temperature_in_key() -> None:
+    from infrastructure.caching import TTLCache
 
     calls: list[int] = []
     client = _counting_client(calls, cache=TTLCache(maxsize=8, ttl=60))

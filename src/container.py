@@ -14,35 +14,40 @@ from sqlalchemy.ext.asyncio import (
     AsyncSession,
 )
 from qdrant_client import QdrantClient
+import httpx
 from minio import Minio
 
 from config import Settings
-from shared.caching import RedisCache, SharedCaches
-from shared.circuit_breaker import CircuitBreaker
-from application.services.indexer import IndexerService
-from application.services.retriever import RetrieverService
-from application.services.document_manager import DocumentManager
+from infrastructure.caching import RedisCache, SharedCaches
+from infrastructure.resilience import CircuitBreaker
+from application.services import IndexerService
+from application.services import RetrieverService
+from application.services import DocumentManager
 from application.interfaces import (
+    DistributedLock,
     DocumentRepository,
     EmbeddingModel,
     FileStorage,
     LLMGenerator,
+    ParserSelector,
+    QueryRewriter,
+    SemanticCache,
     TokenValidator,
     VectorStore,
 )
-from infrastructure.file_storage.minio_storage import MinioStorage
-from infrastructure.vector_store.qdrant_store import QdrantStore
-from infrastructure.repositories.postgres_repo import (
+from infrastructure.file_storage import MinioStorage
+from infrastructure.vector_store import QdrantStore
+from infrastructure.repositories import (
     PostgresDocumentRepository,
 )
-from infrastructure.embedding.sentence_transformer import (
+from infrastructure.embedding import (
     SentenceTransformerEmbedding,
 )
-from infrastructure.llm.deepseek_client import DeepSeekClient
-from infrastructure.llm.openai_client import OpenAIChatClient
-from infrastructure.llm.anthropic_client import AnthropicClient
-from infrastructure.llm.router import LLMProviderSpec, LLMRouter
-from infrastructure.security.jwt_validator import JWTValidator
+from infrastructure.llm import DeepSeekClient
+from infrastructure.llm import OpenAIChatClient
+from infrastructure.llm import AnthropicClient
+from infrastructure.llm import LLMProviderSpec, LLMRouter
+from infrastructure.security import JWTValidator
 
 
 class AppProvider(Provider):
@@ -72,12 +77,22 @@ class AppProvider(Provider):
 
     @provide
     def qdrant_client(self, settings: Settings) -> QdrantClient:
-        """Build the Qdrant client (HTTPS/API-key aware)."""
+        """Build the Qdrant client (HTTPS/API-key/gRPC aware).
+
+        gRPC message-size caps prevent a huge batch response from
+        exhausting worker memory during bulk (re)indexing.
+        """
+        grpc_options = {
+            'grpc.max_receive_message_length': 32 * 1024 * 1024,
+            'grpc.max_send_message_length': 32 * 1024 * 1024,
+        }
         return QdrantClient(
             host=settings.qdrant_host,
             port=settings.qdrant_port,
             https=settings.qdrant_https,
             api_key=settings.qdrant_api_key,
+            prefer_grpc=settings.qdrant_prefer_grpc,
+            grpc_options=grpc_options,
         )
 
     @provide
@@ -94,6 +109,30 @@ class AppProvider(Provider):
             fulltext_enabled=settings.search_hybrid,
             hybrid_candidates=settings.search_hybrid_candidates,
             hybrid_rrf_k=settings.search_hybrid_rrf_k,
+            bm25_stopwords=frozenset(
+                w.strip()
+                for w in settings.search_hybrid_stopwords.split(',')
+                if w.strip()
+            ),
+            bm25_score_threshold=settings.search_bm25_score_threshold,
+        )
+
+    @provide
+    def http_client(self, settings: Settings) -> httpx.AsyncClient:
+        """Shared pooled HTTP client (singleton socket budget).
+
+        LLM adapters must reuse this client instead of building a
+        per-call one: connection storms exhaust host sockets and
+        TLS handshakes dominate latency under high load.
+        """
+        return httpx.AsyncClient(
+            limits=httpx.Limits(
+                max_keepalive_connections=settings.http_keepalive_connections,
+                max_connections=settings.http_max_connections,
+                keepalive_expiry=30.0,
+            ),
+            # Guards against hung AI providers.
+            timeout=httpx.Timeout(20.0, connect=5.0),
         )
 
     @provide
@@ -171,7 +210,11 @@ class AppProvider(Provider):
 
     @provide
     def llm_client(
-        self, settings: Settings, breaker: CircuitBreaker, caches: SharedCaches
+        self,
+        settings: Settings,
+        breaker: CircuitBreaker,
+        caches: SharedCaches,
+        http_client: httpx.AsyncClient,
     ) -> LLMGenerator:
         """Build the LLM router.
 
@@ -200,6 +243,8 @@ class AppProvider(Provider):
                 max_tokens=settings.llm_max_tokens,
                 cache=cache,
                 circuit_breaker=breaker,
+                continue_on_truncation=settings.llm_continue_on_truncation,
+                http_client=http_client,
             )
 
         def openai_factory(model: str) -> LLMGenerator:
@@ -210,6 +255,8 @@ class AppProvider(Provider):
                 max_tokens=settings.llm_max_tokens,
                 cache=cache,
                 circuit_breaker=breaker,
+                continue_on_truncation=settings.llm_continue_on_truncation,
+                http_client=http_client,
             )
 
         def anthropic_factory(model: str) -> LLMGenerator:
@@ -220,6 +267,8 @@ class AppProvider(Provider):
                 max_tokens=settings.llm_max_tokens,
                 cache=cache,
                 circuit_breaker=breaker,
+                continue_on_truncation=settings.llm_continue_on_truncation,
+                http_client=http_client,
             )
 
         factories = {
@@ -264,7 +313,7 @@ class AppProvider(Provider):
     @provide
     def token_validator(self, settings: Settings) -> TokenValidator:
         """Build the JWT validator with rotation keys and blacklist."""
-        from infrastructure.security.token_blacklist import RedisTokenBlacklist
+        from infrastructure.security import RedisTokenBlacklist
 
         blacklist = None
         if settings.redis_url:
@@ -283,12 +332,60 @@ class AppProvider(Provider):
         )
 
     @provide
+    def parser_selector(self, settings: Settings) -> ParserSelector:
+        """Build the parser selector with OCR settings from config."""
+        from infrastructure.parsing import DocumentParserSelector
+
+        return DocumentParserSelector(
+            pdf_ocr_strategy=settings.pdf_ocr_strategy,
+            pdf_ocr_languages=settings.pdf_ocr_languages,
+        )
+
+    @provide
+    def semantic_cache(self, settings: Settings) -> SemanticCache:
+        """Near-duplicate answer cache (no-op while disabled)."""
+        from infrastructure.caching import InMemorySemanticCache
+
+        return InMemorySemanticCache(
+            maxsize=settings.semantic_cache_maxsize,
+            ttl=settings.semantic_cache_ttl,
+            threshold=settings.semantic_cache_threshold,
+            enabled=settings.semantic_cache_enabled,
+        )
+
+    @provide
+    def query_rewriter(
+        self, settings: Settings, llm: LLMGenerator
+    ) -> QueryRewriter:
+        """LLM query rewriter; pass-through when disabled."""
+        from infrastructure.llm import LLMQueryRewriter, NoOpQueryRewriter
+
+        if settings.query_rewrite_enabled:
+            return LLMQueryRewriter(llm)
+        return NoOpQueryRewriter()
+
+    @provide
+    def distributed_lock(self, settings: Settings) -> DistributedLock:
+        """Redis lock across workers; in-process fallback without Redis."""
+        if settings.redis_url:
+            from redis.asyncio import Redis
+
+            from infrastructure.resilience import RedisDistributedLock
+
+            return RedisDistributedLock(Redis.from_url(settings.redis_url))
+        from infrastructure.resilience import InProcessDistributedLock
+
+        return InProcessDistributedLock()
+
+    @provide
     def indexer_service(
         self,
         file_storage: FileStorage,
         vector_store: VectorStore,
         repo: DocumentRepository,
         embedding: EmbeddingModel,
+        parser_selector: ParserSelector,
+        lock: DistributedLock,
         settings: Settings,
     ) -> IndexerService:
         """Build the document indexing service."""
@@ -297,7 +394,13 @@ class AppProvider(Provider):
             vector_store,
             repo,
             embedding,
+            parser_selector,
             embedding_version=settings.embedding_model,
+            lock=lock,
+            lock_ttl=settings.index_lock_ttl,
+            chunk_min_chars=settings.chunk_min_chars,
+            parse_timeout=settings.parse_timeout,
+            child_chars=settings.parent_child_child_chars,
         )
 
     @provide
@@ -307,12 +410,14 @@ class AppProvider(Provider):
         repo: DocumentRepository,
         embedding: EmbeddingModel,
         llm: LLMGenerator,
+        semantic_cache: SemanticCache,
+        query_rewriter: QueryRewriter,
         settings: Settings,
     ) -> RetrieverService:
         """Build the retrieval and answer service."""
         pii_redactor = None
         if settings.anonymize_conversations:
-            from shared.pii import redact_pii
+            from domain.pii import redact_pii
 
             pii_redactor = redact_pii
         return RetrieverService(
@@ -323,6 +428,10 @@ class AppProvider(Provider):
             default_temperature=settings.llm_temperature,
             hybrid_enabled=settings.search_hybrid,
             hybrid_rrf_k=settings.search_hybrid_rrf_k,
+            score_threshold=settings.search_score_threshold,
+            context_max_chars=settings.search_context_max_chars,
+            semantic_cache=semantic_cache,
+            query_rewriter=query_rewriter,
             pii_redactor=pii_redactor,
         )
 
@@ -344,6 +453,7 @@ class AppProvider(Provider):
             indexer,
             embedding,
             embedding_model_name=settings.embedding_model,
+            blue_green=settings.reindex_blue_green,
         )
 
 

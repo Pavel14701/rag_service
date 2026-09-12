@@ -18,16 +18,16 @@ from dishka import AsyncContainer
 
 from config import Settings
 from container import create_container
-from application.services.document_manager import DocumentManager
-from infrastructure.parsing.factory import ParserFactory
-from entrypoints.base_consumer import BaseConsumer
+from application.interfaces import EmbeddingModel, VectorStore
+from application.services import DocumentManager
+from entrypoints.consumers import BaseConsumer
 from entrypoints.health import HealthServer, build_dependency_checks
-from entrypoints.ingest_consumer import IngestConsumer
-from entrypoints.query_consumer import QueryConsumer
-from entrypoints.delete_consumer import DeleteConsumer
-from entrypoints.reindex_consumer import ReindexConsumer
-from shared.logging import configure_logging
-from shared.tracing import setup_tracing
+from entrypoints.consumers import IngestConsumer
+from entrypoints.consumers import QueryConsumer
+from entrypoints.consumers import DeleteConsumer
+from entrypoints.consumers import ReindexConsumer
+from infrastructure.observability import configure_logging
+from infrastructure.observability import setup_tracing
 
 logger = structlog.get_logger()
 
@@ -75,11 +75,30 @@ async def warn_on_embedding_model_mismatch(container: AsyncContainer) -> None:
         )
 
 
-def configure_parsing(settings: Settings) -> None:
-    """Apply OCR settings to the parsing pipeline."""
-    ParserFactory.configure(
-        settings.pdf_ocr_strategy, settings.pdf_ocr_languages
-    )
+async def verify_embedding_dimension(container: AsyncContainer) -> None:
+    """Fail fast when the embedding dimension mismatches the collection.
+
+    Qdrant rejects searches whose vector size differs from the
+    collection config, so an EMBEDDING_MODEL change without a reindex
+    would paralyze the query path entirely. Exiting at startup makes
+    the mismatch loud (orchestrator alerts) instead of failing every
+    query at runtime.
+    """
+    embedding = await container.get(EmbeddingModel)
+    store = await container.get(VectorStore)
+    configured = embedding.dimension()
+    stored = await store.get_collection_dimension()
+    if stored is not None and stored != configured:
+        logger.critical(
+            'embedding_dimension_mismatch_fail_fast',
+            stored_dimension=stored,
+            configured_dimension=configured,
+            hint=(
+                'restore the previous EMBEDDING_MODEL or reindex into '
+                'a new collection (send a reindex message)'
+            ),
+        )
+        raise SystemExit(1)
 
 
 async def main() -> None:
@@ -99,8 +118,8 @@ async def main() -> None:
     await health.start()
     logger.info('health_server_started', port=settings.metrics_port)
 
-    configure_parsing(settings)
     await warn_on_embedding_model_mismatch(container)
+    await verify_embedding_dimension(container)
 
     consumers = select_consumers(settings.worker_queues, container)
     logger.info(

@@ -3,9 +3,15 @@
 import json
 
 from entrypoints.health import HealthServer
+import infrastructure.observability  # noqa: F401  (registers rag_ metrics)
+
+import pytest
+
+pytestmark = pytest.mark.observability
 
 
-async def test_healthz_returns_ok():
+
+async def test_healthz_returns_ok() -> None:
     server = HealthServer({}, port=0)
     status, body, content_type = await server.handle_request("GET", "/healthz")
     assert status == 200
@@ -39,7 +45,7 @@ async def test_readyz_503_when_check_fails():
     assert payload["checks"]["good"] == "ok"
 
 
-async def test_readyz_timeout_reported_as_error():
+async def test_readyz_timeout_reported_as_error() -> None:
     import asyncio
 
     async def slow_check() -> None:
@@ -51,7 +57,7 @@ async def test_readyz_timeout_reported_as_error():
     assert "slow" in json.loads(body)["checks"]
 
 
-async def test_metrics_endpoint_exposes_prometheus_text():
+async def test_metrics_endpoint_exposes_prometheus_text() -> None:
     server = HealthServer({}, port=0)
     status, body, content_type = await server.handle_request("GET", "/metrics")
     assert status == 200
@@ -59,13 +65,13 @@ async def test_metrics_endpoint_exposes_prometheus_text():
     assert "text/plain" in content_type
 
 
-async def test_unknown_path_returns_404():
+async def test_unknown_path_returns_404() -> None:
     server = HealthServer({}, port=0)
     status, _, _ = await server.handle_request("GET", "/nope")
     assert status == 404
 
 
-async def test_server_serves_http_round_trip():
+async def test_server_serves_http_round_trip() -> None:
     import asyncio
 
     server = HealthServer({}, port=0, host="127.0.0.1")

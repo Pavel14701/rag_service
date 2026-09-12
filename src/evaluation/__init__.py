@@ -9,6 +9,7 @@ from .metrics import (
     recall_at_k,
     refusal_rate,
 )
+from .judge import FaithfulnessJudge, LLMFaithfulnessJudge
 from .runner import CaseResult, EvalReport, EvalRunner
 
 __all__ = (
@@ -16,6 +17,8 @@ __all__ = (
     'EvalCase',
     'EvalReport',
     'EvalRunner',
+    'FaithfulnessJudge',
+    'LLMFaithfulnessJudge',
     'faithfulness',
     'hit_rate',
     'load_cases',

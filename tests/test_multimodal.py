@@ -1,9 +1,15 @@
 """Tests for multimodal document support: tables and element typing."""
 
+import uuid
+from pathlib import Path
 from typing import Any
 
-from application.services.indexer import IndexerService
+from application.services import IndexerService
+import pytest
+
 from conftest import requires_unstructured
+
+pytestmark = pytest.mark.indexing
 
 
 class _FakeDoc:
@@ -11,16 +17,22 @@ class _FakeDoc:
     access_group = "group-1"
 
 
+class _FakeSelector:
+    def get_parser(self, file_path) -> None:
+        raise AssertionError('parser selection is not used in this test')
+
+
 def _make_indexer() -> IndexerService:
     return IndexerService(
-        file_storage=None,
-        vector_store=None,
-        repo=None,
-        embedding=None,
+        file_storage=None,  # type: ignore[arg-type]
+        vector_store=None,  # type: ignore[arg-type]
+        repo=None,  # type: ignore[arg-type]
+        embedding=None,  # type: ignore[arg-type]
+        parser_selector=_FakeSelector(),  # type: ignore[arg-type]
     )
 
 
-def test_prepare_chunks_preserves_element_type_and_table_html():
+def test_prepare_chunks_preserves_element_type_and_table_html() -> None:
     indexer = _make_indexer()
     elements: list[dict[str, Any]] = [
         {"text": "Intro paragraph about revenue.", "metadata": {"page": 1, "type": "text"}},
@@ -34,7 +46,9 @@ def test_prepare_chunks_preserves_element_type_and_table_html():
         },
         {"text": "Figure caption text.", "metadata": {"page": 3, "type": "image"}},
     ]
-    chunks = indexer._prepare_chunks(elements, doc_id=None, doc=_FakeDoc())
+    chunks = indexer._prepare_chunks(
+        elements, doc_id=None, doc=_FakeDoc()  # type: ignore[arg-type]
+    )
     assert len(chunks) == 3
 
     text_chunk, table_chunk, image_chunk = chunks
@@ -47,17 +61,19 @@ def test_prepare_chunks_preserves_element_type_and_table_html():
     assert image_chunk["metadata"]["type"] == "image"
 
 
-def test_prepare_chunks_defaults_type_to_text():
+def test_prepare_chunks_defaults_type_to_text() -> None:
     indexer = _make_indexer()
     elements = [{"text": "plain chunk", "metadata": {"page": 1}}]
-    chunks = indexer._prepare_chunks(elements, doc_id=None, doc=_FakeDoc())
+    chunks = indexer._prepare_chunks(
+        elements, doc_id=None, doc=_FakeDoc()  # type: ignore[arg-type]
+    )
     assert chunks[0]["metadata"]["type"] == "text"
 
 
 @requires_unstructured
-def test_pdf_parser_tags_tables_and_images(tmp_path, monkeypatch):
+def test_pdf_parser_tags_tables_and_images(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """PDFParser maps unstructured categories into metadata type/table_html."""
-    from infrastructure.parsing.pdf_parser import PDFParser
+    from infrastructure.parsing import PDFParser
 
     class _Meta:
         def __init__(self, data: dict) -> None:
@@ -88,7 +104,7 @@ def test_pdf_parser_tags_tables_and_images(tmp_path, monkeypatch):
             _El("", {"page_number": 3}),  # empty -> skipped
         ]
 
-    import infrastructure.parsing.pdf_parser as pdf_module
+    import unstructured.partition.pdf as pdf_module
 
     monkeypatch.setattr(pdf_module, "partition_pdf", fake_partition_pdf)
 

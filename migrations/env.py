@@ -10,7 +10,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # ORM metadata for autogenerate.
-from infrastructure.repositories.postgres_repo import Base  # noqa: E402
+from infrastructure.repositories import Base  # noqa: E402
 
 config = context.config
 
