@@ -5,6 +5,8 @@
 | [Architecture](architecture.md) | Layers, ports & adapters, request flow, DI composition |
 | [Configuration](configuration.md) | Every environment variable, grouped and explained |
 | [Retrieval](retrieval.md) | Indexing pipeline, chunking, hybrid search, generation guards |
+| [Agentic Retrieval](agentic-retrieval.md) | Corrective RAG loop: grader, planner, sub-query fusion |
+| [GraphRAG](graphrag.md) | Entity graph, extraction, query expansion, optional backends |
 | [Reliability](reliability.md) | Retry/DLQ, idempotency, locks, circuit breaker, blue-green reindex |
 | [Security](security.md) | JWT lifecycle & rotation, ACL enforcement, PII redaction |
 | [Operations](operations.md) | Deployment, worker roles, maintenance scripts, troubleshooting |

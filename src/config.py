@@ -171,6 +171,24 @@ class Settings(BaseSettings):
     # (search keeps serving during the whole reindex).
     reindex_blue_green: bool = True
 
+    # Agentic retrieval (Corrective RAG): an optional grader validates the
+    # hits and triggers corrective query rewrites; an optional planner
+    # splits complex questions into sub-queries searched in parallel.
+    agentic_grader_enabled: bool = False
+    agentic_planner_enabled: bool = False
+    agentic_max_rounds: int = 0
+    agentic_subquery_limit: int = 3
+
+    # GraphRAG: pseudo-graph in Qdrant (entities collection); the Neo4j
+    # backend requires the optional `graph-neo4j` extra.
+    graph_extract_enabled: bool = False
+    graph_expand_enabled: bool = False
+    graph_max_hops: int = 1
+    graph_backend: str = 'qdrant'
+    neo4j_uri: str = ''
+    neo4j_user: str = ''
+    neo4j_password: str = ''
+
     # Parent-Child retrieval: text elements are split into parent
     # chunks (max_tokens) and child chunks (this many chars); children
     # are embedded, but the LLM receives the parent context and hits

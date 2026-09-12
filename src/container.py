@@ -25,11 +25,15 @@ from application.services import RetrieverService
 from application.services import DocumentManager
 from application.interfaces import (
     DistributedLock,
+    DocumentGrader,
+    EntityExtractor,
+    GraphStore,
     DocumentRepository,
     EmbeddingModel,
     FileStorage,
     LLMGenerator,
     ParserSelector,
+    QueryPlanner,
     QueryRewriter,
     SemanticCache,
     TokenValidator,
@@ -365,6 +369,75 @@ class AppProvider(Provider):
         return NoOpQueryRewriter()
 
     @provide
+    def document_grader(
+        self, settings: Settings, llm: LLMGenerator
+    ) -> DocumentGrader:
+        """LLM hit grader for agentic retrieval; pass-through when off."""
+        from infrastructure.agentic import (
+            LLMDocumentGrader,
+            NoOpDocumentGrader,
+        )
+
+        if settings.agentic_grader_enabled:
+            return LLMDocumentGrader(llm)
+        return NoOpDocumentGrader()
+
+    @provide
+    def query_planner(
+        self, settings: Settings, llm: LLMGenerator
+    ) -> QueryPlanner:
+        """LLM sub-question planner; pass-through when disabled."""
+        from infrastructure.agentic import LLMQueryPlanner, NoOpQueryPlanner
+
+        if settings.agentic_planner_enabled:
+            return LLMQueryPlanner(llm)
+        return NoOpQueryPlanner()
+
+    @provide
+    def entity_extractor(
+        self, settings: Settings, llm: LLMGenerator
+    ) -> EntityExtractor:
+        """LLM relation extractor for GraphRAG; no-op when disabled."""
+        from infrastructure.graph_extract import (
+            LLMEntityExtractor,
+            NoOpEntityExtractor,
+        )
+
+        if settings.graph_extract_enabled or settings.graph_expand_enabled:
+            return LLMEntityExtractor(llm)
+        return NoOpEntityExtractor()
+
+    @provide
+    def graph_store(
+        self,
+        settings: Settings,
+        qdrant: QdrantClient,
+        embedding: EmbeddingModel,
+    ) -> GraphStore:
+        """Entity pseudo-graph in Qdrant; optional Neo4j backend."""
+        if settings.graph_backend == 'neo4j':
+            from infrastructure.graph_store_neo4j import Neo4jGraphStore
+
+            if not (settings.neo4j_uri and settings.neo4j_user):
+                msg = 'GRAPH_BACKEND=neo4j requires NEO4J_URI/NEO4J_USER'
+                raise ValueError(msg)
+            return Neo4jGraphStore(
+                uri=settings.neo4j_uri,
+                user=settings.neo4j_user,
+                password=settings.neo4j_password,
+            )
+        if settings.graph_backend != 'qdrant':
+            msg = f'Unknown GRAPH_BACKEND: {settings.graph_backend}'
+            raise ValueError(msg)
+        from infrastructure.graph_store import QdrantGraphStore
+
+        return QdrantGraphStore(
+            client=qdrant,
+            entities_collection=f'{settings.collection_name}__entities',
+            embedding=embedding,
+        )
+
+    @provide
     def distributed_lock(self, settings: Settings) -> DistributedLock:
         """Redis lock across workers; in-process fallback without Redis."""
         if settings.redis_url:
@@ -386,6 +459,8 @@ class AppProvider(Provider):
         embedding: EmbeddingModel,
         parser_selector: ParserSelector,
         lock: DistributedLock,
+        entity_extractor: EntityExtractor,
+        graph_store: GraphStore,
         settings: Settings,
     ) -> IndexerService:
         """Build the document indexing service."""
@@ -401,6 +476,8 @@ class AppProvider(Provider):
             chunk_min_chars=settings.chunk_min_chars,
             parse_timeout=settings.parse_timeout,
             child_chars=settings.parent_child_child_chars,
+            entity_extractor=entity_extractor,
+            graph_store=graph_store,
         )
 
     @provide
@@ -412,6 +489,10 @@ class AppProvider(Provider):
         llm: LLMGenerator,
         semantic_cache: SemanticCache,
         query_rewriter: QueryRewriter,
+        document_grader: DocumentGrader,
+        query_planner: QueryPlanner,
+        entity_extractor: EntityExtractor,
+        graph_store: GraphStore,
         settings: Settings,
     ) -> RetrieverService:
         """Build the retrieval and answer service."""
@@ -432,6 +513,13 @@ class AppProvider(Provider):
             context_max_chars=settings.search_context_max_chars,
             semantic_cache=semantic_cache,
             query_rewriter=query_rewriter,
+            document_grader=document_grader,
+            query_planner=query_planner,
+            agentic_max_rounds=settings.agentic_max_rounds,
+            agentic_subquery_limit=settings.agentic_subquery_limit,
+            entity_extractor=entity_extractor,
+            graph_store=graph_store,
+            graph_max_hops=settings.graph_max_hops,
             pii_redactor=pii_redactor,
         )
 

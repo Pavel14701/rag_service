@@ -46,6 +46,12 @@ in a single composition root.
   answer without an LLM call (opt-in, see the ACL caveat in the settings)
 - Truncated answers (`finish_reason=length` / `stop_reason=max_tokens`) are
   **never cached**; optional continuation requests merge the full answer
+- **Agentic retrieval** (opt-in): an LLM grader validates the hits and
+  triggers corrective rewrites; an LLM planner splits complex questions into
+  sub-queries searched in parallel and fused with RRF
+- **GraphRAG** (opt-in): relation triples are extracted at indexing time and
+  chunks of graph-neighboring documents are merged into the context at query
+  time; pseudo-graph in Qdrant, optional Neo4j backend via an extra
 
 **Reliability**
 - **Blue-Green reindex**: a shadow collection is built while search keeps
@@ -117,6 +123,8 @@ Full documentation lives in [docs/](docs/index.md):
 | [Architecture](docs/architecture.md) | layers, ports & adapters, request flows |
 | [Configuration](docs/configuration.md) | every environment variable, explained |
 | [Retrieval](docs/retrieval.md) | chunking, hybrid search, caching, prompt hardening |
+| [Agentic Retrieval](docs/agentic-retrieval.md) | corrective RAG loop: grader, planner, sub-query fusion |
+| [GraphRAG](docs/graphrag.md) | entity graph, extraction, expansion, optional backends |
 | [Reliability](docs/reliability.md) | retry/DLQ, idempotency, locks, blue-green reindex |
 | [Security](docs/security.md) | JWT lifecycle, ACL enforcement, PII redaction |
 | [Operations](docs/operations.md) | deployment, roles, maintenance, troubleshooting |

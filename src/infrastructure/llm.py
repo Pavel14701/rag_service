@@ -551,12 +551,22 @@ class LLMQueryRewriter:
         self._llm = llm
         self._temperature = temperature
 
-    async def rewrite(self, query: str) -> str:
-        """Return the rewritten query, or the original on any failure."""
+    async def rewrite(self, query: str, feedback: str | None = None) -> str:
+        """Return the rewritten query, or the original on any failure.
+
+        ``feedback`` (agentic retrieval) is appended to the prompt so the
+        corrective round rephrases away from the failed attempt.
+        """
+        user_prompt = query
+        if feedback:
+            user_prompt = (
+                f'{query}\n\n(A previous search with a similar query found '
+                f'irrelevant results: {feedback}. Rephrase differently.)'
+            )
         try:
             rewritten = (
                 await self._llm.generate(
-                    self._SYSTEM_PROMPT, query, self._temperature
+                    self._SYSTEM_PROMPT, user_prompt, self._temperature
                 )
             ).strip()
         except Exception:  # noqa: BLE001 - search must not depend on it
@@ -567,6 +577,6 @@ class LLMQueryRewriter:
 class NoOpQueryRewriter:
     """Pass-through rewriter used when rewriting is disabled."""
 
-    async def rewrite(self, query: str) -> str:
+    async def rewrite(self, query: str, feedback: str | None = None) -> str:
         """Return the query unchanged."""
         return query

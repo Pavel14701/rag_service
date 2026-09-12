@@ -37,6 +37,8 @@ The dependency rule, enforced by convention and checked in CI:
 | `DistributedLock` | `resilience.RedisDistributedLock` / `InProcessDistributedLock` | fallback without Redis |
 | `SemanticCache` | `caching.InMemorySemanticCache` | opt-in, no-op when disabled |
 | `QueryRewriter` | `llm.LLMQueryRewriter` / `NoOpQueryRewriter` | graceful fallback |
+| `DocumentGrader` / `QueryPlanner` | `agentic.LLMDocumentGrader` / `LLMQueryPlanner` + NoOps | corrective RAG loop ([Agentic Retrieval](agentic-retrieval.md)) |
+| `EntityExtractor` / `GraphStore` | `graph_extract.*` / `graph_store.QdrantGraphStore`, optional `Neo4jGraphStore` | GraphRAG ([GraphRAG](graphrag.md)) |
 
 ## Request flow (query path)
 

@@ -6,6 +6,7 @@ DI container (composition root).
 """
 
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import AsyncIterator
 from typing import Any, Protocol, runtime_checkable
@@ -312,8 +313,12 @@ class QueryRewriter(Protocol):
     because of an auxiliary LLM call).
     """
 
-    async def rewrite(self, query: str) -> str:
-        """Return the rewritten query (or the original one)."""
+    async def rewrite(self, query: str, feedback: str | None = None) -> str:
+        """Return the rewritten query (or the original one).
+
+        ``feedback`` is the grader reason from the previous agentic
+        round (agentic retrieval); rewriters may use it to rephrase.
+        """
         ...
 
 
@@ -344,4 +349,90 @@ class DistributedLock(Protocol):
 
     async def release(self, name: str) -> None:
         """Release the lock (only if still owned by this instance)."""
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Agentic retrieval (Corrective RAG)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GradeVerdict:
+    """Verdict of a DocumentGrader on the retrieved hits."""
+
+    relevant: bool
+    reason: str = ''
+    score: float = 0.0
+
+
+@runtime_checkable
+class DocumentGrader(Protocol):
+    """Agentic retrieval: grades retrieved hits against the query.
+
+    Used by the corrective loop: a negative verdict with a reason triggers
+    a corrective query rewrite and another search round.
+    """
+
+    async def grade(
+        self, query: str, hits: list[dict[str, Any]]
+    ) -> GradeVerdict:
+        """Return whether the hits are good enough to answer."""
+        ...
+
+
+@runtime_checkable
+class QueryPlanner(Protocol):
+    """Agentic retrieval: splits a question into sub-questions.
+
+    Sub-queries are searched in parallel and fused. Implementations must
+    degrade gracefully (return at least the original question).
+    """
+
+    async def plan(self, query: str) -> list[str]:
+        """Return sub-questions (at least one)."""
+        ...
+
+
+# ---------------------------------------------------------------------------
+# GraphRAG
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ExtractedRelation:
+    """One (subject; predicate; object) triple extracted from text."""
+
+    subject: str
+    predicate: str
+    obj: str
+
+
+@runtime_checkable
+class EntityExtractor(Protocol):
+    """GraphRAG: extracts relation triples from free text."""
+
+    async def extract(self, text: str) -> list[ExtractedRelation]:
+        """Extract triples; empty list when nothing is found."""
+        ...
+
+
+@runtime_checkable
+class GraphStore(Protocol):
+    """GraphRAG: entity/relation store supporting graph expansion."""
+
+    async def add_relations(
+        self,
+        doc_id: uuid.UUID,
+        relations: list[ExtractedRelation],
+    ) -> None:
+        """Store triples extracted from a document."""
+        ...
+
+    async def related_doc_ids(
+        self,
+        entity_names: list[str],
+        max_hops: int = 1,
+    ) -> list[uuid.UUID]:
+        """Doc ids of documents mentioning neighbors of the entities."""
         ...

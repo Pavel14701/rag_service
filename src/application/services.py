@@ -17,12 +17,16 @@ from bs4 import BeautifulSoup
 
 from application.interfaces import (
     DistributedLock,
+    DocumentGrader,
     DocumentParser,
     DocumentRepository,
     EmbeddingModel,
+    EntityExtractor,
     FileStorage,
+    GraphStore,
     LLMGenerator,
     ParserSelector,
+    QueryPlanner,
     QueryRewriter,
     SemanticCache,
     VectorStore,
@@ -55,6 +59,8 @@ class IndexerService:
         chunk_min_chars: int = 0,
         parse_timeout: float = 0.0,
         child_chars: int = 0,
+        entity_extractor: EntityExtractor | None = None,
+        graph_store: GraphStore | None = None,
     ) -> None:
         self._file_storage = file_storage
         self._vector_store = vector_store
@@ -77,6 +83,10 @@ class IndexerService:
         # Version marker stamped into every point payload so that a
         # model change can be detected (migration reindexing).
         self._embedding_version = embedding_version
+        # GraphRAG (opt-in): extract relation triples into the graph store
+        # after a successful upsert; indexing never fails because of it.
+        self._entity_extractor = entity_extractor
+        self._graph_store = graph_store
 
     async def index_document(self, doc_id: uuid.UUID) -> None:
         """Index a document by its ID.
@@ -155,6 +165,27 @@ class IndexerService:
                     vectors=embeddings,
                     payloads=[c['metadata'] for c in chunks],
                 )
+
+                # GraphRAG (opt-in): best-effort relation extraction into
+                # the graph store; indexing never fails because of the graph.
+                if (
+                    self._entity_extractor is not None
+                    and self._graph_store is not None
+                ):
+                    try:
+                        relations = await self._entity_extractor.extract(
+                            ' '.join(texts)
+                        )
+                        if relations:
+                            await self._graph_store.add_relations(
+                                doc_id, relations
+                            )
+                    except Exception as graph_error:  # noqa: BLE001
+                        logger.warning(
+                            'graph_extraction_failed',
+                            doc_id=str(doc_id),
+                            error=str(graph_error),
+                        )
 
                 await self._repo.update_status(doc_id, DocStatus.INDEXED)
 
@@ -431,6 +462,13 @@ class RetrieverService:
         context_max_chars: int = 0,
         semantic_cache: SemanticCache | None = None,
         query_rewriter: QueryRewriter | None = None,
+        document_grader: DocumentGrader | None = None,
+        query_planner: QueryPlanner | None = None,
+        agentic_max_rounds: int = 0,
+        agentic_subquery_limit: int = 3,
+        entity_extractor: EntityExtractor | None = None,
+        graph_store: GraphStore | None = None,
+        graph_max_hops: int = 1,
         pii_redactor: Callable[[str], str] | None = None,
     ) -> None:
         self._vector_store = vector_store
@@ -451,6 +489,16 @@ class RetrieverService:
         self._semantic_cache = semantic_cache
         # Opt-in query rewriter (auxiliary LLM call before search).
         self._query_rewriter = query_rewriter
+        # Agentic retrieval (Corrective RAG): optional hit grader + query
+        # planner; max_rounds=0 means single-pass (previous behavior).
+        self._document_grader = document_grader
+        self._query_planner = query_planner
+        self._agentic_max_rounds = agentic_max_rounds
+        self._agentic_subquery_limit = agentic_subquery_limit
+        # GraphRAG expansion (opt-in): pull chunks of graph-neighboring docs.
+        self._entity_extractor = entity_extractor
+        self._graph_store = graph_store
+        self._graph_max_hops = graph_max_hops
         # Optional callable applied to query/answer before persisting
         # conversations (PII redaction, see domain.pii).
         self._pii_redactor = pii_redactor
@@ -516,36 +564,68 @@ class RetrieverService:
         else:
             filter_cond = {'key': 'owner_id', 'match': {'value': user_id}}
 
-        # Query rewriting (opt-in): normalize/expand the question for
-        # better recall; rewriter implementations fall back to the
-        # original text on any failure.
+        # Agentic loop: an optional planner splits the question into
+        # sub-queries (searched in parallel, RRF-fused); an optional
+        # grader validates the hits and triggers corrective rewrites.
+        # Without a grader this is a single pass - the default behavior.
+        feedback: str | None = None
+        hits: list[dict[str, Any]] = []
+        query_vec: list[float] | None = None
         search_query = query
-        if self._query_rewriter is not None:
-            search_query = await self._query_rewriter.rewrite(query)
+        rounds_used = 0
+        while True:
+            rounds_used += 1
+            search_query = query
+            if self._query_rewriter is not None:
+                # rewriters degrade gracefully to the original text
+                search_query = await self._query_rewriter.rewrite(
+                    query, feedback=feedback
+                )
 
-        # Embed query (E5 models require the "query: " prefix)
-        query_vec = (await self._embedding.embed_query([search_query]))[0]
+            hits, query_vec = await self._search_round(
+                search_query, top_k, filter_cond
+            )
 
-        # Search (hybrid: vector ranking fused with lexical BM25 when enabled)
-        hits = await self._vector_store.search(
-            vector=query_vec,
-            top_k=top_k,
-            filter_condition=filter_cond,
-            keyword_query=search_query if self._hybrid_enabled else None,
-        )
+            # Weak hits are noise: they spend the context budget and can
+            # push the LLM towards hallucinations.
+            if self._score_threshold > 0:
+                hits = [
+                    h
+                    for h in hits
+                    if float(h.get('score') or 0) >= self._score_threshold
+                ]
 
-        # Weak hits are noise: they spend the context budget and can
-        # push the LLM towards hallucinations.
-        if self._score_threshold > 0:
-            hits = [
-                h
-                for h in hits
-                if float(h.get('score') or 0) >= self._score_threshold
-            ]
+            # Parent-Child auto-merge: child hits of the same parent collapse
+            # into one hit carrying the parent text (deduplicated, best first).
+            hits = self._auto_merge_parents(hits)
 
-        # Parent-Child auto-merge: child hits of the same parent collapse
-        # into one hit carrying the parent text (deduplicated, best first).
-        hits = self._auto_merge_parents(hits)
+            if self._document_grader is None:
+                break  # no grader configured: single pass
+            verdict = await self._document_grader.grade(search_query, hits)
+            if verdict.relevant:
+                break
+            if rounds_used >= self._agentic_max_rounds:
+                # rounds exhausted: answer from the best hits we have
+                logger.info(
+                    'agentic_rounds_exhausted',
+                    rounds=rounds_used,
+                    reason=verdict.reason,
+                )
+                break
+            feedback = verdict.reason
+            logger.info(
+                'agentic_retry',
+                round=rounds_used,
+                reason=verdict.reason,
+            )
+
+        # GraphRAG expansion (opt-in): extract query entities, follow graph
+        # neighbors to related documents (same ACL filter) and merge their
+        # chunks into the hits without duplicates.
+        if query_vec is not None:
+            hits += await self._graph_expand(
+                search_query, query_vec, filter_cond, hits, top_k
+            )
 
         context_parts: list[str] = []
         sources: list[dict[str, Any]] = []
@@ -622,6 +702,140 @@ class RetrieverService:
             'sources': sources,
             'conversation_id': conversation_id,
         }
+
+    # -- agentic retrieval helpers ------------------------------------------
+
+    async def _search_round(
+        self,
+        search_query: str,
+        top_k: int,
+        filter_cond: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[float]]:
+        """One round: optional sub-queries, returns (hits, query vector).
+
+        A planner (when wired) splits the question into independent
+        sub-questions; they are embedded and searched in parallel and
+        fused with Reciprocal Rank Fusion. Falls back to a single search
+        when no planner is wired (default).
+        """
+        sub_queries = [search_query]
+        if self._query_planner is not None:
+            try:
+                planned = await self._query_planner.plan(search_query)
+            except Exception:  # noqa: BLE001 - planner must not break search
+                planned = []
+            planned = [q for q in planned if q.strip()]
+            if planned:
+                sub_queries = planned[: self._agentic_subquery_limit]
+
+        if len(sub_queries) == 1:
+            query_vec = (await self._embedding.embed_query(sub_queries))[0]
+            hits = await self._search_one(
+                query_vec, sub_queries[0], top_k, filter_cond
+            )
+            return hits, query_vec
+
+        vectors = await self._embedding.embed_query(sub_queries)
+        hits_per_query = await asyncio.gather(
+            *(
+                self._search_one(vec, q, top_k, filter_cond)
+                for vec, q in zip(vectors, sub_queries)
+            )
+        )
+        merged = self._merge_sub_queries(
+            [list(h) for h in hits_per_query], top_k
+        )
+        # cache-friendly embedding of the first sub-query
+        return merged, vectors[0]
+
+    async def _search_one(
+        self,
+        query_vec: list[float],
+        search_query: str,
+        top_k: int,
+        filter_cond: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Single search: hybrid vector+BM25 when enabled."""
+        return await self._vector_store.search(
+            vector=query_vec,
+            top_k=top_k,
+            filter_condition=filter_cond,
+            keyword_query=search_query if self._hybrid_enabled else None,
+        )
+
+    def _merge_sub_queries(
+        self,
+        ranked_lists: list[list[dict[str, Any]]],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        """Fuse sub-query results with RRF; the payload of the first
+        occurrence wins, scores are the fused RRF values.
+        """
+        k = self._hybrid_rrf_k
+        scores: dict[str, float] = {}
+        first: dict[str, dict[str, Any]] = {}
+        for hits in ranked_lists:
+            for rank, hit in enumerate(hits, start=1):
+                key = str(hit.get('id'))
+                scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
+                first.setdefault(key, hit)
+        merged: list[dict[str, Any]] = []
+        ranked = sorted(scores.items(), key=lambda kv: -kv[1])[:top_k]
+        for key, _score in ranked:
+            hit = dict(first[key])
+            hit['score'] = scores[key]
+            merged.append(hit)
+        return merged
+
+    async def _graph_expand(
+        self,
+        search_query: str,
+        query_vec: list[float],
+        filter_cond: dict[str, Any],
+        hits: list[dict[str, Any]],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        """GraphRAG expansion: chunks of graph-neighboring documents.
+
+        Extracts entities from the query (auxiliary LLM call), follows the
+        entity graph to related documents and searches them with the same
+        ACL filter. Best-effort: any failure returns no extra hits.
+        """
+        if self._entity_extractor is None or self._graph_store is None:
+            return []
+        try:
+            relations = await self._entity_extractor.extract(search_query)
+        except Exception:  # noqa: BLE001 - expansion is best-effort
+            return []
+        if not relations:
+            return []
+        names = sorted(
+            {*{r.subject for r in relations}, *{r.obj for r in relations}}
+        )
+        try:
+            doc_ids = await self._graph_store.related_doc_ids(
+                names, max_hops=self._graph_max_hops
+            )
+        except Exception:  # noqa: BLE001 - expansion is best-effort
+            return []
+        if not doc_ids:
+            return []
+        doc_cond: dict[str, Any] = {
+            'should': [
+                {
+                    'key': 'doc_id',
+                    'match': {'value': [str(d) for d in doc_ids]},
+                }
+            ]
+        }
+        try:
+            extra = await self._search_one(
+                query_vec, search_query, top_k, doc_cond
+            )
+        except Exception:  # noqa: BLE001 - expansion is best-effort
+            return []
+        known = {h.get('id') for h in hits}
+        return [h for h in extra if h.get('id') not in known]
 
     @staticmethod
     def _auto_merge_parents(

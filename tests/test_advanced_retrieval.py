@@ -17,7 +17,7 @@ class StaticRewriter:
     def __init__(self, rewritten: str = "rewritten question") -> None:
         self.rewritten = rewritten
 
-    async def rewrite(self, query: str) -> str:
+    async def rewrite(self, query: str, feedback: str | None = None) -> str:
         return self.rewritten
 
 

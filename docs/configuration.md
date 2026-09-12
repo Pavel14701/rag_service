@@ -73,6 +73,25 @@ to match the development docker-compose.
 | `PARSE_VALIDATE_MIME` | `true` | magic-bytes vs extension check |
 | `PDF_OCR_STRATEGY` / `PDF_OCR_LANGUAGES` | `auto` / `eng` | unstructured OCR handling |
 
+### Agentic retrieval
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AGENTIC_GRADER_ENABLED` | `false` | LLM grades hits; negative verdict triggers a corrective rewrite ([details](agentic-retrieval.md)) |
+| `AGENTIC_PLANNER_ENABLED` | `false` | LLM splits the question into sub-queries searched in parallel |
+| `AGENTIC_MAX_ROUNDS` | `0` | max search rounds with a grader wired (0/no grader = single pass) |
+| `AGENTIC_SUBQUERY_LIMIT` | `3` | max sub-queries per round |
+
+### GraphRAG
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GRAPH_EXTRACT_ENABLED` | `false` | extract relation triples while indexing ([details](graphrag.md)) |
+| `GRAPH_EXPAND_ENABLED` | `false` | merge chunks of graph-neighboring documents at query time |
+| `GRAPH_MAX_HOPS` | `1` | graph traversal depth |
+| `GRAPH_BACKEND` | `qdrant` | `qdrant` (pseudo-graph) or `neo4j` (requires the `graph-neo4j` extra) |
+| `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` | *(empty)* | Neo4j connection when `GRAPH_BACKEND=neo4j` |
+
 ## Reindex & locks
 
 | Variable | Default | Purpose |
