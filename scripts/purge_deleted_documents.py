@@ -23,14 +23,17 @@ from infrastructure.repositories import (  # noqa: E402
 )
 from sqlalchemy import delete, select, func  # noqa: E402
 from sqlalchemy.ext.asyncio import (  # noqa: E402
+    AsyncEngine,
     async_sessionmaker,
     create_async_engine,
     AsyncSession,
 )
 
 
-def _session_factory(settings: Settings):
-    engine = create_async_engine(settings.postgres_dsn, echo=False)
+def _session_factory(settings: Settings) -> async_sessionmaker[AsyncSession]:
+    engine: AsyncEngine = create_async_engine(
+        settings.postgres_dsn, echo=False
+    )
     return async_sessionmaker(
         engine, expire_on_commit=False, class_=AsyncSession
     )

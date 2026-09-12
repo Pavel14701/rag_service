@@ -1,6 +1,5 @@
 """Tests for isolated OCR parsing: gate, subprocess runner, timeouts."""
 
-import json
 import sys
 from pathlib import Path
 
@@ -11,7 +10,6 @@ from domain.model import ParseTimeoutError
 from infrastructure.parsing import (
     DocumentParserSelector,
     PDFParser,
-    SubprocessParseRunner,
     UnstructuredParser,
     _pdf_has_text_layer,
     _run_subprocess_json,
@@ -157,12 +155,33 @@ async def test_runner_raises_on_nonzero_exit(tmp_path):
 
 
 async def test_runner_targets_packaged_worker_module():
-    '''The packaged worker stays import-light and validates argc.'''
+    """The packaged worker stays import-light and validates argc.
+
+    The lazy-import guarantee is checked in a fresh interpreter: other
+    tests in this process may already hold unstructured in sys.modules.
+    """
+    import subprocess
+    import sys as _sys
+
     from infrastructure import parsing_worker
 
     # CLI contract: wrong argc exits 2 without importing unstructured
     assert parsing_worker.main(['x']) == 2
-    assert 'unstructured' not in sys.modules
+
+    src_root = str(Path(__file__).resolve().parent.parent / 'src')
+    probe = (
+        "import infrastructure.parsing_worker, sys; "
+        "print('unstructured' in sys.modules)"
+    )
+    proc = subprocess.run(
+        [_sys.executable, '-c', probe],
+        capture_output=True,
+        text=True,
+        cwd=src_root,
+        timeout=60,
+        check=True,
+    )
+    assert proc.stdout.strip() == 'False'  # import stays lazy
 
 # ---------- IndexerService wiring ----------
 
